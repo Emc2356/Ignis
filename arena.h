@@ -34,8 +34,13 @@
 #define ARENA_BACKEND_LIBC_MALLOC 0
 #define ARENA_BACKEND_LINUX_MMAP 1
 #define ARENA_BACKEND_WIN32_VIRTUALALLOC 2
+/* expects this functions to be defined:
+ * void* arena__internal_malloc(arena_size_t sz);
+ * void arena__internal_free(void* ptr, arena_size_t sz);
+ */
+#define ARENA_BACKEND_CUSTOM 3
 /* not implemented yet because i need to figure out how to make a heap allocator on top of __heap_base */
-#define ARENA_BACKEND_WASM_HEAPBASE 3
+#define ARENA_BACKEND_WASM_HEAPBASE 4
 
 #ifndef ARENA_BACKEND
 #define ARENA_BACKEND ARENA_BACKEND_LIBC_MALLOC
@@ -157,6 +162,9 @@ const char* arena_error_to_string(const Arena_Error error);
             MEM_RELEASE                 /* Release the page ( And implicitly decommit it ) */
         );
     }
+#elif ARENA_BACKEND == ARENA_BACKEND_CUSTOM
+    void* arena__internal_malloc(arena_size_t sz);
+    void arena__internal_free(void* ptr, arena_size_t sz);
 #elif ARENA_BACKEND == ARENA_BACKEND_WASM_HEAPBASE
     #error "unsuported arena backend"
 #else
@@ -174,7 +182,7 @@ const char* arena_error_to_string(const Arena_Error error);
     }
     
     static void* arena__internal_memset(void* dst, unsigned char c, arena_size_t n) {
-        void* d;
+        void* d = dst;
         for (; n; n--) {
             *d = c;
             d++;
@@ -257,11 +265,12 @@ static void arena__free_page(Arena_Page* page) {
 ARENA_API Arena arena_create(arena_size_t page_size) {
     Arena self;
     
+    self.error = ARENA_NONE;
     self.min_page_capacity = page_size;
+    self.mark = 0;
     self.last_allocated_ptr = NULL;
     self.last_page = arena___new_page(page_size);
     self.unused_pages = NULL;
-    self.error = ARENA_NONE;
     
     return self;
 }
@@ -299,9 +308,9 @@ ARENA_API void arena_rewind(Arena* self, arena_size_t checkpoint) {
     
     while (page) {
         running_mark = arena__get_running_mark(page);
-        
+
         /* if the checkpoint is between the running mark and the running mark at the start of the page */
-        if (checkpoint <= running_mark && checkpoint >= running_mark - page->mark) {
+        if (running_mark - page->mark <= checkpoint && checkpoint <= running_mark) {
             if (page == self->last_page) { /* the checkpoint was refering to the first page */
                 self->last_page->mark -= self->mark - checkpoint;
                 self->mark = checkpoint;
@@ -347,6 +356,7 @@ ARENA_API void arena_reset(Arena* self) {
     self->last_page->prev_page = NULL;
     
     self->mark = 0;
+    self->last_page->mark = 0;
     self->last_allocated_ptr = NULL;
 }
 
@@ -367,7 +377,7 @@ ARENA_API void arena_reset_and_zero(Arena* self) {
 ARENA_API void* arena_malloc(Arena* self, arena_size_t size) {
     Arena_Page* new_page = NULL;
     Arena_Page* prev_page = NULL;
-    
+
     self->error = ARENA_NONE;
     
     /* (1) check if the size is valid */
@@ -406,8 +416,8 @@ ARENA_API void* arena_malloc(Arena* self, arena_size_t size) {
             }
         }
         
-        self->mark += self->last_page->capacity - self->last_page->mark;
-        self->last_page->mark += self->last_page->capacity - self->last_page->mark;
+        self->mark = self->mark - self->last_page->mark + self->last_page->capacity;
+        self->last_page->mark = self->last_page->capacity;
         
         new_page->prev_page = self->last_page;
         self->last_page = new_page;
@@ -424,7 +434,7 @@ ARENA_API void* arena_memalign(Arena* self, arena_size_t size, arena_size_t alig
     self->error = ARENA_NONE;
     
     /* no alignment */
-    if (alignment == 0) {
+    if (alignment <= 1) {
         return arena_malloc(self, size);
     }
     /* not power of 2 */
@@ -435,6 +445,12 @@ ARENA_API void* arena_memalign(Arena* self, arena_size_t size, arena_size_t alig
     if (size == 0) {
         self->error = ARENA_INVALID_SIZE;
         return NULL;
+    }
+    
+    if ((uintptr_t)self->last_page->start + self->last_page->mark + size <= self->last_page->capacity) {
+        if (((uintptr_t)self->last_page->start + self->last_page->mark) % alignment) {
+            return arena_malloc(self, size);
+        }
     }
     allocation_size = size + alignment - 1;
     address = arena_malloc(self, allocation_size);
@@ -483,8 +499,8 @@ ARENA_API void* arena_realloc(Arena* self, void* ptr, arena_size_t old_size, are
 
             /* the new size is less then the old size */
             if (last_allocation_size >= new_size) {
-                self->last_page->mark =- last_allocation_size - new_size;
-                self->mark =- last_allocation_size - new_size;
+                self->last_page->mark -= last_allocation_size - new_size;
+                self->mark -= last_allocation_size - new_size;
                 return ptr;
             } else {
                 /* check if the current page can hold extra data */
@@ -508,11 +524,16 @@ ARENA_API void* arena_realloc(Arena* self, void* ptr, arena_size_t old_size, are
 ARENA_API void arena_free(Arena* self, void* ptr) {
     self->error = ARENA_NONE;
     
+    /* self->last_allocated_ptr might be null */
+    if (ptr == NULL) {
+        return;
+    }
+    
     /* try to reclaim the memory if it was the last allocation made */
     if (ptr == self->last_allocated_ptr) {
         /* last_allocation_size = (start + mark) - ptr; */
-        self->last_page->mark -= (arena_size_t)self->last_page->start + self->last_page->mark - (arena_size_t)ptr;
         self->mark -= (arena_size_t)self->last_page->start + self->last_page->mark - (arena_size_t)ptr;
+        self->last_page->mark -= (arena_size_t)self->last_page->start + self->last_page->mark - (arena_size_t)ptr;
         /* some safety to guard against double free */
         self->last_allocated_ptr = NULL;
     }
@@ -571,6 +592,7 @@ ARENA_API const char* arena_error_to_string(const Arena_Error error) {
     case ARENA_INVALID_SIZE: return "INVALID_SIZE";
     case ARENA_INVALID_ALIGNMENT: return "INVALID_ALIGNMENT";
     case ARENA_INVALID_FORMAT: return "INVALID_FORMAT";
+    default: return "UNKNOWN_ERROR";
     }
 }
 
