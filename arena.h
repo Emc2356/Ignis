@@ -21,15 +21,15 @@
 #define _ARENA_H
 
 #include <stdint.h> /* uintptr_t */
-#ifdef NOSTDLIB
+#ifdef ARENA_NOSTDLIB
     typedef unsigned int arena_size_t;
-#else
+#else /* ARENA_NOSTDLIB */
     #include <stdlib.h> /* malloc free */
     #include <stdio.h> /* va_list printf vsnprintf */
     #include <stdarg.h> /* va_start va_end */
     #include <string.h> /* memset memcpy strlen */
     typedef size_t arena_size_t;
-#endif
+#endif /* ARENA_NOSTDLIB */
 
 #define ARENA_BACKEND_LIBC_MALLOC 0
 #define ARENA_BACKEND_LINUX_MMAP 1
@@ -93,6 +93,8 @@ ARENA_API char* arena_strdup(Arena* arena, const char* str);
 ARENA_API char* arena_strndup(Arena* arena, const char* str, arena_size_t n);
 ARENA_API void* arena_memdup(Arena* arena, const void* buffer, arena_size_t buffer_size);
 ARENA_API char* arena_strcat(Arena* arena, const char* str1, const char* str2);
+#define arena_join_strings(arena, sep, str1, ...) arena__join_strings(arena, sep, str1, __VA_ARGS__, NULL)
+char* arena__join_strings(Arena* arena, const char* sep, const char* str1, ...);
 
 const char* arena_error_to_string(const Arena_Error error);
 
@@ -583,6 +585,48 @@ ARENA_API char* arena_strcat(Arena* arena, const char* str1, const char* str2) {
         result[len1 + len2] = '\0';
     }
     return result;
+}
+
+char* arena__join_strings(Arena* arena, const char* sep, const char* str1, ...) {
+    va_list vargs;
+    char* final_string;
+    arena_size_t final_string_len;
+    arena_size_t offset;
+    const char* strarg;
+    
+    va_start(vargs, str1);
+        final_string_len = 0;
+        final_string_len += strlen(str1);
+        
+        strarg = va_arg(vargs, const char*);
+        for (; strarg; strarg = va_arg(vargs, const char*)) {
+            final_string_len += strlen(sep);
+            final_string_len += strlen(strarg);
+        }
+    va_end(vargs);
+    final_string = arena_malloc(arena, final_string_len + 1);
+    
+    if (final_string == NULL) {
+        return NULL;
+    }
+    
+    va_start(vargs, str1);
+        offset = 0;
+        arena__internal_memcpy(final_string + offset, str1, strlen(str1));
+        offset += strlen(str1);
+        
+        strarg = va_arg(vargs, const char*);
+        for (; strarg; strarg = va_arg(vargs, const char*)) {
+            arena__internal_memcpy(final_string + offset, sep, strlen(sep));
+            offset += strlen(sep);
+            arena__internal_memcpy(final_string + offset, strarg, strlen(strarg));
+            offset += strlen(strarg);
+        }
+    va_end(vargs);
+    
+    final_string[final_string_len] = 0;
+    
+    return final_string;
 }
 
 ARENA_API const char* arena_error_to_string(const Arena_Error error) {
