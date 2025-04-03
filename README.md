@@ -7,3 +7,6 @@ heavily insipred by https://github.com/tsoding/arena and https://github.com/c3la
 # ignis_filesystem.h
 an abstraction layer over basic filesystem operations written in C89  
 NOTE: windows version was tested on linux with mingw and wine
+# ignis_process.h
+an abstraction layer over process creation and management written in C89  
+NOTE: windows version was tested on linux with mingw and wine
