@@ -106,6 +106,7 @@ extern "C" {
     #include <signal.h>
     #include <errno.h>
 #endif /* _WIN32 */
+#include <string.h>
 
 #ifdef _WIN32
 #define IG_THREADING_INTERNAL_CALL(func) func##_win32
