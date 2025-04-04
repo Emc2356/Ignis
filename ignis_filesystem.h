@@ -271,13 +271,13 @@ IG_FS_PRIVATE_DEF int IgFs__joinpath_buf(char* buf, size_t buf_size, const char*
             return 0;
         }
     }
-    total_len = pathA_len + pathB_len + 2; // +2 for '/' and '\0'
+    total_len = pathA_len + pathB_len + 2; /* +2 for '/' and '\0' */
     if (total_len > buf_size) return 0;
     
     IgFs__strncpy(buf, pathA, pathA_len);
     buf[pathA_len] = '/';
     IgFs__strncpy(buf + pathA_len + 1, pathB, pathB_len);
-    buf[total_len-1] = '\0'; // Null-terminate the joined path
+    buf[total_len-1] = '\0'; /* Null-terminate the joined path */
 
     return 1;
 }
@@ -814,35 +814,35 @@ IG_FS_API int IgFs_is_absolute_win32(const char* path) {
 IG_FS_API int IgFs_is_relative(const char* root, const char* path) {
     int chopped_path_sep;
     
-    if (!root || !path) return 0; // NULL paths are invalid
-    if (!*root || !*path) return 0; // Empty paths are invalid
+    if(!root || !path) return 0; /*  NULL paths are invalid */
+    if(!*root || !*path) return 0; /*  Empty paths are invalid */
 
-    // Compare the root and path character by character
+    /* Compare the root and path character by character */
     while (*root && *path) {
         chopped_path_sep = IgFs__is_sep(*path);
-        // Skip consecutive separators in root and path
+        /* Skip consecutive separators in root and path */
         while (IgFs__is_sep(*root)) root++;
         while (IgFs__is_sep(*path)) path++;
 
         if (!*root && chopped_path_sep)
-            return 1; // Path starts with a separator, so it's relative
+            reurn 1; /*  Path starts with a separator, so it's relative */
 
-        // Compare the current character
+            /* Compare the current character */
         if (*root != *path) {
-            return 0; // Mismatch
+            reurn 0; /*  Mismatch */
         }
 
-        // Move to the next character
+        /* Move to the next character */
         root++;
         path++;
     }
 
-    // If root is exhausted, path is relative to root
+    /* If root is exhausted, path is relative to root */
     if (!*root) {
-        // Skip any trailing separators in root
+        /* Skip any trailing separators in root */
         while (IgFs__is_sep(*root)) root++;
 
-        // If root is fully exhausted, check if path is empty or continues with a separator
+        /* If root is fully exhausted, check if path is empty or continues with a separator */
         if (!*root) {
             if (!*path || IgFs__is_sep(*path)) {
                 return 1;
@@ -884,7 +884,6 @@ IG_FS_API char** IgFs_suffixes(const char* path, int* suffix_count) {
 
     final_component = IgFs__last_component_ref(path);
 
-    // Count the number of dots in the final component
     dot_count = 0;
     p = final_component;
     while (*p) {
@@ -896,7 +895,6 @@ IG_FS_API char** IgFs_suffixes(const char* path, int* suffix_count) {
         *suffix_count = 0;
     }
     
-    // If there are no dots or only one dot at the start, return NULL
     if (dot_count == 0 || (dot_count == 1 && final_component[0] == '.')) {
         return NULL;
     }
@@ -905,23 +903,18 @@ IG_FS_API char** IgFs_suffixes(const char* path, int* suffix_count) {
     if (!suffixes) return NULL;
     suffixes[dot_count] = NULL;
     
-    // Extract suffixes
     p = final_component;
     index = 0;
     while (*p) {
         if (*p == '.') {
-            // Skip the first dot if it's at the start of the final component
             if (p != final_component) {
                 const char* next_dot = strchr(p + 1, '.');
                 if (next_dot) {
-                    // Copy up to the next dot
                     suffixes[index] = IgFs__strndup(p, (size_t)(next_dot - p));
                 } else {
-                    // Copy until the end of the string
                     suffixes[index] = IgFs__strdup(p);
                 }
                 if (!suffixes[index]) {
-                    // Free previously allocated suffixes on failure
                     for (i = 0; i < index; i++) {
                         IG_FS_FREE(suffixes[i]);
                     }
@@ -947,38 +940,38 @@ IG_FS_API char* IgFs_with_suffix(const char* path, const char* suffix) {
     const char* final_component;
     char* new_path;
     
-    if (!path || !suffix) return NULL; // Invalid input
+    if(!path || !suffix) return NULL; /*  Invalid input */
 
     final_component = IgFs__last_component_ref(path);
 
-    // Find the last '.' in the final component
+    /* Find the last '.' in the final component */
     last_dot = strrchr(final_component, '.');
 
-    // Calculate the length of the new path
+    /* Calculate the length of the new path */
     path_len = strlen(path);
     suffix_len = strlen(suffix);
 
     if (last_dot) {
-        // If there is a dot, replace the existing suffix
+        /* If there is a dot, replace the existing suffix */
         new_path_len = (size_t)(last_dot - path) + suffix_len + 1;
     } else {
-        // If there is no dot, append the new suffix
+        /* If there is no dot, append the new suffix */
         new_path_len = path_len + suffix_len + 1;
     }
 
-    // Allocate memory for the new path
+    /* Allocate memory for the new path */
     new_path = (char*)IG_FS_MALLOC(new_path_len);
-    if (!new_path) return NULL; // Memory allocation failed
+    if(!new_path) return NULL; /*  Memory allocation failed */
 
-    // Copy the path up to the last dot (or the entire path if no dot exists)
+    /* Copy the path up to the last dot (or the entire path if no dot exists) */
     if (last_dot) {
         IgFs__strncpy(new_path, path, (size_t)(last_dot - path));
-        new_path[last_dot - path] = '\0'; // Null-terminate the copied part
+        ne_path[last_dot - path] = '\0'; /*  Null-terminate the copied part */
     } else {
         strcpy(new_path, path);
     }
 
-    // Append the new suffix
+    /* Append the new suffix */
     strcat(new_path, suffix);
 
     return new_path;
@@ -994,21 +987,21 @@ IG_FS_API char* IgFs_stem(const char* path) {
 
     final_component = IgFs__last_component_ref(path);
 
-    // Find the last '.' in the final component
+    /* Find the last '.' in the final component */
     last_dot = strrchr(final_component, '.');
 
-    // Calculate the length of the new path
+    /* Calculate the length of the new path */
     final_component_len = strlen(final_component);
     stem_len = last_dot ? (size_t)(last_dot - path) : final_component_len;
 
-    // Allocate memory for the new path
+    /* Allocate memory for the new path */
     stem = (char*)IG_FS_MALLOC(stem_len + 1);
-    if (!stem) return NULL; // Memory allocation failed
+    if(!stem) return NULL; /*  Memory allocation failed */
 
-    // Copy the path up to the last dot (or the entire path if no dot exists)
+    /* Copy the path up to the last dot (or the entire path if no dot exists) */
     if (last_dot) {
         IgFs__strncpy(stem, final_component, (size_t)(last_dot - final_component));
-        stem[last_dot - final_component] = '\0'; // Null-terminate the copied part
+        stm[last_dot - final_component] = '\0'; /*  Null-terminate the copied part */
     } else {
         strcpy(stem, final_component);
     }
@@ -1023,20 +1016,20 @@ IG_FS_API char* IgFs_parent(const char* path) {
 
     if (!path) return NULL;
 
-    // Find the last '/' in the path
+    /* Find the last '/' in the path */
     last_slash = IgFs__last_slash_ref(path);
 
-    // Calculate the length of the new path
+    /* Calculate the length of the new path */
     parent_len = last_slash ? (size_t)(last_slash - path) : 1;
 
-    // Allocate memory for the new path
+    /* Allocate memory for the new path */
     parent = (char*)IG_FS_MALLOC(parent_len + 1);
-    if (!parent) return NULL; // Memory allocation failed
+    if(!parent) return NULL; /*  Memory allocation failed */
 
-    // Copy the path up to the last slash (or the entire path if no slash exists)
+    /* Copy the path up to the last slash (or the entire path if no slash exists) */
     if (last_slash) {
         IgFs__strncpy(parent, path, parent_len);
-        parent[parent_len] = '\0'; // Null-terminate the copied part
+        paent[parent_len] = '\0'; /*  Null-terminate the copied part */
     } else {
         if (IgFs__is_sep(path[0])) {
             parent[0] = path[0];
@@ -1079,14 +1072,14 @@ IG_FS_API char* IgFs_joinpath(const char* pathA, const char* pathB) {
         pathB++;
     }
     if (pathB_len == 0) return IgFs__strdup(pathA);
-    total_len = pathA_len + pathB_len + 2; // +2 for '/' and '\0'
+    total_len = pathA_len + pathB_len + 2; /* +2 for '/' and '\0' */
     joined_path = (char*)IG_FS_MALLOC(total_len);
     if (!joined_path) return NULL;
     
     IgFs__strncpy(joined_path, pathA, pathA_len);
     joined_path[pathA_len] = '/';
     IgFs__strncpy(joined_path + pathA_len + 1, pathB, pathB_len);
-    joined_path[total_len-1] = '\0'; // Null-terminate the joined path
+    joined_path[total_len-1] = '\0'; /* Null-terminate the joined path */
 
     return joined_path;
 }
@@ -1750,21 +1743,21 @@ IG_FS_API int IgFs_copyfile(const char* src_path, const char* dst_path) {
     #define IG_FS_FNM_QUESTION -4
     #define IG_FS_FNM_STAR -5
     #define	IG_FS_FNM_NOMATCH 1
-    
-    // static wctype_t IgFs__wctype(const char *s) {
-    //    	int i;
-    //    	const char *p;
-    //    	/* order must match! */
-    //    	static const char names[] =
-    //   		"alnum\0" "alpha\0" "blank\0"
-    //   		"cntrl\0" "digit\0" "graph\0"
-    //   		"lower\0" "print\0" "punct\0"
-    //   		"space\0" "upper\0" "xdigi\0t";
-    //    	for (i=1, p=names; *p; i++, p+=6)
-    //   		if (*s == *p && !strcmp(s, p))
-    //  			return i;
-    //    	return 0;
-    // }
+    /*
+        static wctype_t IgFs__wctype(const char *s) {
+       	int i;
+       	const char *p;
+       	static const char names[] =
+      		"alnum\0" "alpha\0" "blank\0"
+      		"cntrl\0" "digit\0" "graph\0"
+      		"lower\0" "print\0" "punct\0"
+      		"space\0" "upper\0" "xdigi\0t";
+       	for (i=1, p=names; *p; i++, p+=6)
+      		if (*s == *p && !strcmp(s, p))
+     			return i;
+       	return 0;
+    }
+    */
     
     static int IgFs__str_next(const char *str, size_t n, size_t *step) {
        	if (!n) {
@@ -1851,9 +1844,9 @@ IG_FS_API int IgFs_copyfile(const char* src_path, const char* dst_path) {
     				char buf[16];
     				memcpy(buf, p0, p-1-p0);
     				buf[p-1-p0] = 0;
-        // @TODO
-    				// if (iswctype(k, IgFs__wctype(buf)) || iswctype(kfold, IgFs__wctype(buf)))
-       	// 				return !inv;
+        /* @TODO */
+    				/* if (iswctype(k, IgFs__wctype(buf)) || iswctype(kfold, IgFs__wctype(buf))) */
+       	/* 				return !inv; */
      			}
      			continue;
       		}
