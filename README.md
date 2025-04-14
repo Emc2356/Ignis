@@ -3,16 +3,11 @@ ignis project is a collection of headers only libraries written in C89 or are C8
 
 NOTE: windows version was tested on linux with mingw and wine
 
-## ignis_arena.h
-arena implementation in C89 
-heavily insipred by https://github.com/tsoding/arena and https://github.com/c3lang/c3c (temp_allocators.c3)
-## ignis_filesystem.h
-an abstraction layer over basic filesystem operations written in C89  
-## ignis_process.h
-an abstraction layer over process creation and management written in C89  
-## ignis_threading.h
-an abstraction layer over thread, mutex and semaphore creation and management written in C89  
-## ignis_networking.h
-an abstraction layer over tcp/udp sockets in C89
-## ignis_websocket.h
-RFC 6455 (websocket) implemented in C89
+| File | Description |
+|------|-------------|
+| [`ignis_arena.h`](ignis_arena.h) | arena implementation in C89 |
+| [`ignis_filesystem.h`](ignis_filesystem.h) | an abstraction layer over basic filesystem operations |
+| [`ignis_process.h`](ignis_process.h) | an abstraction layer over process creation and management |
+| [`ignis_threading.h`](ignis_threading.h) | an abstraction layer over thread, mutex and semaphore creation and management |
+| [`ignis_networking.h`](ignis_networking.h) | an abstraction layer over tcp/udp sockets |
+| [`ignis_websocket.h`](ignis_websocket.h) | RFC 6455 (websocket) implementation |
