@@ -14,3 +14,5 @@ an abstraction layer over process creation and management written in C89
 an abstraction layer over thread, mutex and semaphore creation and management written in C89  
 ## ignis_networking.h
 an abstraction layer over tcp/udp sockets in C89
+## ignis_websocket.h
+RFC 6455 (websocket) implemented in C89

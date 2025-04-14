@@ -38,7 +38,6 @@
 extern "C" {
 #endif /* __cplusplus */
 
-/* VERY important function for winsock, does nothing for posix */
 IG_NETWORKING_API int IgNetworking_init(void);
 IG_NETWORKING_API void IgNetworking_shutdown(void);
 
@@ -64,6 +63,8 @@ IG_NETWORKING_API void IgTcpSocket_close(IgTcpSocket* tcpsocket);
 IG_NETWORKING_API int IgTcpSocket_read(IgTcpSocket* tcpsocket, char* buffer, size_t buffer_size);
 IG_NETWORKING_API int IgTcpSocket_peek(IgTcpSocket* tcpsocket, char* buffer, size_t buffer_size);
 IG_NETWORKING_API int IgTcpSocket_write(IgTcpSocket* tcpsocket, const char* buffer, size_t buffer_size);
+IG_NETWORKING_API int IgTcpSocket_read_entire_buffer(IgTcpSocket* tcpsocket, char* buffer, size_t buffer_size);
+IG_NETWORKING_API int IgTcpSocket_write_entire_buffer(IgTcpSocket* tcpsocket, const char* buffer, size_t buffer_size);
 
 /* UDP socket */
 typedef struct IgUdpSocket IgUdpSocket;
@@ -108,6 +109,7 @@ IG_NETWORKING_API int IgUdpSocket_write(IgUdpSocket* socket, const char* buffer,
 #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
 #pragma clang diagnostic ignored "-Wpadded"
 #pragma clang diagnostic ignored "-Wswitch-default"
+#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
 #endif /* __clang__ */
 
 #ifdef __cplusplus
@@ -122,6 +124,7 @@ extern "C" {
     #include <sys/socket.h>
     #include <netinet/in.h>
     #include <arpa/inet.h>
+    #include <signal.h>
     #include <netdb.h>
     #include <unistd.h>
     #include <fcntl.h>
@@ -175,7 +178,6 @@ static int IgNetworking_init_win32(void) {
     }
     return 1;
 }
-
 
 static void IgNetworking_shutdown_win32(void) {
     if (IgNetworking_is_winsock_initialized) {
@@ -482,6 +484,11 @@ static int IgUdpSocket_sendto_win32(IgUdpSocket* udpsocket, const char* buffer, 
 #else /* _WIN32 */
 
 static int IgNetworking_init_posix(void) {
+    struct sigaction sa;
+    sa.sa_handler = SIG_IGN;  // Ignore SIGPIPE
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGPIPE, &sa, NULL);  // Apply the change
     return 1;
 }
 
@@ -514,7 +521,7 @@ static int IgTcpSocket_resolve_address(const char* hostname, int port, IgIProtoc
 
 static IgTcpSocket* IgTcpSocket_listen_posix(const char* hostname, int port, IgIProtocol protocol) {
     IgTcpSocket* tcpsocket;
-    int option;
+    int option = 1;
     struct sockaddr_storage addr;
     
     tcpsocket = IG_NETWORKING_MALLOC(sizeof(*tcpsocket));
@@ -607,8 +614,8 @@ static void IgTcpSocket_close_posix(IgTcpSocket* tcpsocket) {
     char buffer[1024];
     ssize_t bytes_read;
     /* shutdown further socket io */
-    shutdown(tcpsocket->fd, SHUT_RDWR);
-    /* drain the socket */
+    shutdown(tcpsocket->fd, SHUT_WR);
+    /* drain the socket (read until we get 0 to make sure the other side closed the socket) */
     while ((bytes_read = read(tcpsocket->fd, buffer, sizeof(buffer))) > 0);
     /* finally close the socket */
     close(tcpsocket->fd);
@@ -831,6 +838,32 @@ IG_NETWORKING_API int IgTcpSocket_write(IgTcpSocket* tcpsocket, const char* buff
     if (buffer_size == 0) return 0;
     if (buffer == NULL) return -1;
     return IG_NETWORKING_INTERNAL_CALL(IgTcpSocket_write)(tcpsocket, buffer, buffer_size);
+}
+
+IG_NETWORKING_API int IgTcpSocket_read_entire_buffer(IgTcpSocket* tcpsocket, char* buffer, size_t buffer_size) {
+    char* buf = buffer;
+    int n;
+    
+    while (buffer_size > 0) {
+        n = IgTcpSocket_read(tcpsocket, buf, buffer_size);
+        if (n < 0) return n;
+        buf += n;
+        buffer_size -= (size_t)n;
+    }
+    return 0;
+}
+
+IG_NETWORKING_API int IgTcpSocket_write_entire_buffer(IgTcpSocket* tcpsocket, const char* buffer, size_t buffer_size) {
+    const char* buf = buffer;
+    int n;
+    
+    while (buffer_size > 0) {
+        n = IgTcpSocket_write(tcpsocket, buf, buffer_size);
+        if (n < 0) return n;
+        buf += n;
+        buffer_size -= (size_t)n;
+    }
+    return 0;
 }
 
 IG_NETWORKING_API IgUdpSocket* IgUdpSocket_bind(const char* hostname, int port, IgIProtocol protocol) {
