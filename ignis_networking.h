@@ -54,6 +54,7 @@ typedef struct IgTcpSocket IgTcpSocket;
 /* server */
 IG_NETWORKING_API IgTcpSocket* IgTcpSocket_listen(const char* hostname, int port, IgIProtocol protocol);
 IG_NETWORKING_API IgTcpSocket* IgTcpSocket_accept(IgTcpSocket* server);
+IG_NETWORKING_API int IgTcpSocket_can_accept(IgTcpSocket* server);
 
 /* client */
 IG_NETWORKING_API IgTcpSocket* IgTcpSocket_connect(const char* hostname, int port, IgIProtocol protocol);
@@ -65,6 +66,8 @@ IG_NETWORKING_API int IgTcpSocket_peek(IgTcpSocket* tcpsocket, char* buffer, siz
 IG_NETWORKING_API int IgTcpSocket_write(IgTcpSocket* tcpsocket, const char* buffer, size_t buffer_size);
 IG_NETWORKING_API int IgTcpSocket_read_entire_buffer(IgTcpSocket* tcpsocket, char* buffer, size_t buffer_size);
 IG_NETWORKING_API int IgTcpSocket_write_entire_buffer(IgTcpSocket* tcpsocket, const char* buffer, size_t buffer_size);
+IG_NETWORKING_API int IgTcpSocket_can_read(IgTcpSocket* tcpsocket);
+IG_NETWORKING_API int IgTcpSocket_can_write(IgTcpSocket* tcpsocket);
 
 /* UDP socket */
 typedef struct IgUdpSocket IgUdpSocket;
@@ -136,11 +139,8 @@ extern "C" {
 struct IgTcpSocket {
     #ifdef _WIN32
         SOCKET fd;
-        struct sockaddr_storage addr;
     #else /* _WIN32 */
-        int fd;                       /* Socket file descriptor */
-        /* not certain if this is information i want to keep or no */
-        struct sockaddr_storage addr; /* Remote address (for accepted connections) */
+        int fd;
     #endif /* _WIN32 */
 };
 
@@ -250,14 +250,12 @@ static IgTcpSocket* IgTcpSocket_listen_win32(const char* hostname, int port, IgI
 
 static IgTcpSocket* IgTcpSocket_accept_win32(IgTcpSocket* server) {
     IgTcpSocket* client;
-    int addrlen;
     
     client = (IgTcpSocket*)IG_NETWORKING_MALLOC(sizeof(IgTcpSocket));
     if (!client) return NULL;
     memset(client, 0, sizeof(IgTcpSocket));
     
-    addrlen = sizeof(client->addr);
-    client->fd = accept(server->fd, (struct sockaddr*)&client->addr, &addrlen);
+    client->fd = accept(server->fd, NULL, NULL);
     
     if (client->fd == INVALID_SOCKET) {
         IG_NETWORKING_FREE(client);
@@ -265,6 +263,14 @@ static IgTcpSocket* IgTcpSocket_accept_win32(IgTcpSocket* server) {
     }
     
     return client;
+}
+
+static int IgTcpSocket_can_accept_win32(IgTcpSocket* server) {
+    WSANETWORKEVENTS events;
+    if (WSAEnumNetworkEvents(server->fd, NULL, &events) == SOCKET_ERROR)
+        return 0;
+    
+    return ((events.lNetworkEvents & FD_ACCEPT) != 0) || ((events.lNetworkEvents & FD_CLOSE) != 0);
 }
 
 static IgTcpSocket* IgTcpSocket_connect_win32(const char* hostname, int port, IgIProtocol protocol) {
@@ -323,6 +329,22 @@ static int IgTcpSocket_write_win32(IgTcpSocket* tcpsocket, const char* buffer, s
     int bytes = send(tcpsocket->fd, buffer, (int)buffer_size, 0);
     if (bytes == SOCKET_ERROR) return -1;
     return bytes;
+}
+
+static int IgTcpSocket_can_read_win32(IgTcpSocket* tcpsocket) {
+    WSANETWORKEVENTS events;
+    if (WSAEnumNetworkEvents(tcpsocket->fd, NULL, &events) == SOCKET_ERROR)
+        return 0;
+    
+    return ((events.lNetworkEvents & FD_READ) != 0) ||  ((events.lNetworkEvents & FD_CLOSE) != 0);
+}
+
+static int IgTcpSocket_can_write_win32(IgTcpSocket* tcpsocket) {
+    WSANETWORKEVENTS events;
+    if (WSAEnumNetworkEvents(tcpsocket->fd, NULL, &events) == SOCKET_ERROR)
+        return 0;
+    
+    return ((events.lNetworkEvents & FD_WRITE) != 0) || ((events.lNetworkEvents & FD_CLOSE) != 0);
 }
 
 static IgUdpSocket* IgUdpSocket_bind_win32(const char* hostname, int port, IgIProtocol protocol) {
@@ -485,15 +507,15 @@ static int IgUdpSocket_sendto_win32(IgUdpSocket* udpsocket, const char* buffer, 
 
 static int IgNetworking_init_posix(void) {
     struct sigaction sa;
-    sa.sa_handler = SIG_IGN;  // Ignore SIGPIPE
+    sa.sa_handler = SIG_IGN;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
-    sigaction(SIGPIPE, &sa, NULL);  // Apply the change
+    sigaction(SIGPIPE, &sa, NULL);
     return 1;
 }
 
 static void IgNetworking_shutdown_posix(void) {
-    
+    /* empty */
 }
 
 static int IgTcpSocket_resolve_address(const char* hostname, int port, IgIProtocol protocol, struct sockaddr_storage* addr) {
@@ -562,14 +584,12 @@ static IgTcpSocket* IgTcpSocket_listen_posix(const char* hostname, int port, IgI
 
 static IgTcpSocket* IgTcpSocket_accept_posix(IgTcpSocket* server) {
     IgTcpSocket* client;
-    socklen_t addrlen;
     
     client = IG_NETWORKING_MALLOC(sizeof(*client));
     if (!client) return NULL;
     memset(client, 0, sizeof(*client));
     
-    addrlen = sizeof(client->addr);
-    client->fd = accept(server->fd, (struct sockaddr*)&client->addr, &addrlen);
+    client->fd = accept(server->fd, NULL, NULL);
     
     if (client->fd < 0) {
         IG_NETWORKING_FREE(client);
@@ -577,6 +597,21 @@ static IgTcpSocket* IgTcpSocket_accept_posix(IgTcpSocket* server) {
     }
     
     return client;
+}
+
+static int IgTcpSocket_can_accept_posix(IgTcpSocket* server) {
+    fd_set read_fds;
+    struct timeval timeout = {0, 0};
+    int result;
+    
+    FD_ZERO(&read_fds);
+    FD_SET(server->fd, &read_fds);
+    
+    result = select(server->fd + 1, &read_fds, NULL, NULL, &timeout);
+    if (result > 0 && FD_ISSET(server->fd, &read_fds)) {
+        return 1;
+    }
+    return 0;
 }
 
 static IgTcpSocket* IgTcpSocket_connect_posix(const char* hostname, int port, IgIProtocol protocol) {
@@ -642,6 +677,37 @@ static int IgTcpSocket_write_posix(IgTcpSocket* tcpsocket, const char* buffer, s
     ssize_t bytes = write(tcpsocket->fd, buffer, buffer_size);
     if (bytes < 0) return -1;
     return (int)bytes;
+}
+
+static int IgTcpSocket_can_read_posix(IgTcpSocket* tcpsocket) {
+    fd_set read_fds;
+    struct timeval timeout = {0, 0};
+    int result;
+    
+    FD_ZERO(&read_fds);
+    FD_SET(tcpsocket->fd, &read_fds);
+    
+    result = select(tcpsocket->fd + 1, &read_fds, NULL, NULL, &timeout);
+    if (result > 0 && FD_ISSET(tcpsocket->fd, &read_fds)) {
+        return 1;
+    }
+    return 0;
+}
+
+static int IgTcpSocket_can_write_posix(IgTcpSocket* tcpsocket) {
+    fd_set write_fds;
+    struct timeval timeout = {0, 0};
+    int result;
+    
+    FD_ZERO(&write_fds);
+    FD_SET(tcpsocket->fd, &write_fds);
+    
+    
+    result = select(tcpsocket->fd + 1, NULL, &write_fds, NULL, &timeout);
+    if (result > 0 && FD_ISSET(tcpsocket->fd, &write_fds)) {
+        return 1;
+    }
+    return 0;
 }
 
 static IgUdpSocket* IgUdpSocket_bind_posix(const char* hostname, int port, IgIProtocol protocol) {
@@ -810,6 +876,11 @@ IG_NETWORKING_API IgTcpSocket* IgTcpSocket_accept(IgTcpSocket* server) {
     return IG_NETWORKING_INTERNAL_CALL(IgTcpSocket_accept)(server);
 }
 
+IG_NETWORKING_API int IgTcpSocket_can_accept(IgTcpSocket* server) {
+    return IG_NETWORKING_INTERNAL_CALL(IgTcpSocket_can_accept)(server);
+}
+
+
 IG_NETWORKING_API IgTcpSocket* IgTcpSocket_connect(const char* hostname, int port, IgIProtocol protocol) {
     return IG_NETWORKING_INTERNAL_CALL(IgTcpSocket_connect)(hostname, port, protocol);
 }
@@ -864,6 +935,14 @@ IG_NETWORKING_API int IgTcpSocket_write_entire_buffer(IgTcpSocket* tcpsocket, co
         buffer_size -= (size_t)n;
     }
     return 0;
+}
+
+IG_NETWORKING_API int IgTcpSocket_can_read(IgTcpSocket* tcpsocket) {
+    return IG_NETWORKING_INTERNAL_CALL(IgTcpSocket_can_read)(tcpsocket);
+}
+
+IG_NETWORKING_API int IgTcpSocket_can_write(IgTcpSocket* tcpsocket) {
+    return IG_NETWORKING_INTERNAL_CALL(IgTcpSocket_can_write)(tcpsocket);
 }
 
 IG_NETWORKING_API IgUdpSocket* IgUdpSocket_bind(const char* hostname, int port, IgIProtocol protocol) {
