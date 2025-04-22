@@ -62,16 +62,17 @@ typedef enum IgWebSocketError {
     /* the user of this library needs to handle IG_WS_CONNECTION_CLOSED and IG_WS_SOCKET_IO_FAILED */
     IG_WS_CONNECTION_CLOSED                            = -19,
     IG_WS_SOCKET_IO_FAILED                             = -20,
+    IG_WS_PING_ROUTINE_FAILED                          = -21,
     /* automatically handled by the library (by closing and sending appropriate response) */
-    IG_WS_FRAME_CONTROL_TOO_BIG                        = -21,
-    IG_WS_FRAME_RESERVED_BITS_NOT_NEGOTIATED           = -22,
-    IG_WS_FRAME_UNEXPECTED_OPCODE                      = -23,
-    IG_WS_FRAME_UNEXPECTED_MASKED                      = -24,
-    IG_WS_FRAME_EXPECTED_MASKED                        = -25,
-    IG_WS_UTF8_SHORT                                   = -26,
-    IG_WS_UTF8_INVALID                                 = -27,
+    IG_WS_FRAME_CONTROL_TOO_BIG                        = -22,
+    IG_WS_FRAME_RESERVED_BITS_NOT_NEGOTIATED           = -23,
+    IG_WS_FRAME_UNEXPECTED_OPCODE                      = -24,
+    IG_WS_FRAME_UNEXPECTED_MASKED                      = -25,
+    IG_WS_FRAME_EXPECTED_MASKED                        = -26,
+    IG_WS_UTF8_SHORT                                   = -27,
+    IG_WS_UTF8_INVALID                                 = -28,
     /* if the websocket state is OPEN then the user needs to handle IG_WS_FRAME_CLOSE_SENT otherwise it was already handled */
-    IG_WS_FRAME_CLOSE_SENT                             = -28
+    IG_WS_FRAME_CLOSE_SENT                             = -29
 } IgWebSocketError;
 
 typedef enum IgWebSocketMessageKind {
@@ -101,6 +102,12 @@ typedef int(*IgWebSocketReadFn)(void* tcpsocket, char* buffer, size_t buffer_siz
 typedef int(*IgWebSocketPeekFn)(void* tcpsocket, char* buffer, size_t buffer_size);
 typedef int(*IgWebSocketWriteFn)(void* tcpsocket, const char* buffer, size_t buffer_size);
 typedef void(*IgWebSocketCloseFn)(void* tcpsocket);
+typedef struct IgWebSocketIo {
+    IgWebSocketReadFn readfn;
+    IgWebSocketPeekFn peekfn;
+    IgWebSocketWriteFn writefn;
+    IgWebSocketCloseFn closefn;
+} IgWebSocketIo;
 typedef struct IgWebSocket {
     /* holds the last error  */
     IgWebSocketError error;
@@ -114,10 +121,7 @@ typedef struct IgWebSocket {
     /* the socket that websocket operates on */
     void* tcpsocket;
     /* functions that operate on `tcpsocket` */
-    IgWebSocketReadFn readfn;
-    IgWebSocketPeekFn peekfn;
-    IgWebSocketWriteFn writefn;
-    IgWebSocketCloseFn closefn;
+    IgWebSocketIo socketio;
     
     /* websocket requires a lot of allocations for messages so it is designed to be used with an arena allocator */
     /* the pointer that is pased to `reallocfunc` */
@@ -174,6 +178,8 @@ IG_WEBSOCKET_API int IgWebSocket_client_handshake(IgWebSocket* ws, const char* h
 IG_WEBSOCKET_API int IgWebSocket_send_message(IgWebSocket* ws, const void* payload, size_t payload_length, IgWebSocketMessageKind kind);
 IG_WEBSOCKET_API int IgWebSocket_read_message(IgWebSocket* ws, IgWebSocketMessage* message);
 IG_WEBSOCKET_API void IgWebSocket_close(IgWebSocket* ws);
+
+IG_WEBSOCKET_API int IgWebSocket_ping(IgWebSocket* ws);
 
 /* even if there was a failure while reading a message, the message should still be freed to avoid leaks */
 IG_WEBSOCKET_API void IgWebSocket_free_message(IgWebSocket* ws, IgWebSocketMessage* message);
@@ -378,7 +384,7 @@ static void IgWebSocket__free(IgWebSocket* ws, void* ptr, size_t size) {
 static int IgWebSocket__read_entire_buffer(IgWebSocket* ws, unsigned char* buffer, size_t size) {
     int bytes_read = 0;
     while (size > 0) {
-        bytes_read = ws->readfn(ws->tcpsocket, (char*)buffer, size);
+        bytes_read = ws->socketio.readfn(ws->tcpsocket, (char*)buffer, size);
         if (bytes_read == 0) {
             ws->error = IG_WS_CONNECTION_CLOSED;
             return 0;
@@ -396,7 +402,7 @@ static int IgWebSocket__write_entire_buffer(IgWebSocket* ws, const void* buffer_
     int bytes_written = 0;
     const char* buffer = (const char*)buffer_;
     while (size > 0) {
-        bytes_written = ws->writefn(ws->tcpsocket, buffer, size);
+        bytes_written = ws->socketio.writefn(ws->tcpsocket, buffer, size);
         if (bytes_written == 0) {
             ws->error = IG_WS_CONNECTION_CLOSED;
             return 0;
@@ -688,6 +694,7 @@ static const char* IgWebSocket__get_failure_http_response(IgWebSocketError error
     case IG_WS_FRAME_EXPECTED_MASKED:
     case IG_WS_FRAME_UNEXPECTED_MASKED:
     case IG_WS_SOCKET_IO_FAILED:
+    case IG_WS_PING_ROUTINE_FAILED:
     default:
         return "HTTP/1.1 500 Internal Server Error\r\n"
                 "Content-Type: text/plain\r\n"
@@ -1029,7 +1036,7 @@ static int IgWebSocket__read_http_request(IgWebSocket* ws, char** buffer, int* b
     *buffer = (char*)IgWebSocket__realloc(ws, NULL, 0, (size_t)*buffer_capacity);
     
     for (;;) {
-        bytes_read = ws->peekfn(ws->tcpsocket, *buffer, (size_t)*buffer_capacity-1);
+        bytes_read = ws->socketio.peekfn(ws->tcpsocket, *buffer, (size_t)*buffer_capacity-1);
         if (bytes_read <= 0) {
             ws->error = IG_WS_HS_NO_END;
             IgWebSocket__free(ws, *buffer, (size_t)*buffer_capacity);
@@ -1102,6 +1109,8 @@ IG_WEBSOCKET_API const char* IgWebSocketError_to_string(IgWebSocketError error) 
         return "IG_WS_CONNECTION_CLOSED";
     case IG_WS_SOCKET_IO_FAILED:
         return "IG_WS_SOCKET_IO_FAILED";
+    case IG_WS_PING_ROUTINE_FAILED:
+        return "IG_WS_PING_ROUTINE_FAILED";
     case IG_WS_FRAME_CONTROL_TOO_BIG:
         return "IG_WS_FRAME_CONTROL_TOO_BIG";
     case IG_WS_FRAME_RESERVED_BITS_NOT_NEGOTIATED:
@@ -1118,6 +1127,8 @@ IG_WEBSOCKET_API const char* IgWebSocketError_to_string(IgWebSocketError error) 
         return "IG_WS_UTF8_SHORT";
     case IG_WS_UTF8_INVALID:
         return "IG_WS_UTF8_INVALID";
+    default:
+        return "Unknown error";
     }
 }
 
@@ -1165,6 +1176,8 @@ IG_WEBSOCKET_API const char* IgWebSocketError_to_human(IgWebSocketError error) {
             return "Connection closed";
         case IG_WS_SOCKET_IO_FAILED:
             return "Unknown error occured when operating on tcpsocket";
+        case IG_WS_PING_ROUTINE_FAILED:
+            return "Ping routine failed";
         case IG_WS_FRAME_CONTROL_TOO_BIG:
             return "Frame control too big";
         case IG_WS_FRAME_RESERVED_BITS_NOT_NEGOTIATED:
@@ -1181,6 +1194,8 @@ IG_WEBSOCKET_API const char* IgWebSocketError_to_human(IgWebSocketError error) {
             return "UTF8 short";
         case IG_WS_UTF8_INVALID:
             return "UTF8 invalid";
+        default:
+            return "Unknown error";
     }
 }
 
@@ -1355,7 +1370,7 @@ IG_WEBSOCKET_API int IgWebSocket_server_handshake_reject_error(IgWebSocket* ws, 
     
     IgWebSocket__free_handshake_info(ws, handshake_info);
     
-    ws->closefn(ws->tcpsocket);
+    ws->socketio.closefn(ws->tcpsocket);
     ws->state = IG_WS_STATE_CLOSED;
     
     return 1;
@@ -1374,7 +1389,7 @@ IG_WEBSOCKET_API int IgWebSocket_server_handshake_reject_auth(IgWebSocket* ws, I
     
     IgWebSocket__free_handshake_info(ws, handshake_info);
     
-    ws->closefn(ws->tcpsocket);
+    ws->socketio.closefn(ws->tcpsocket);
     ws->state = IG_WS_STATE_CLOSED;
     
     return 1;
@@ -1400,7 +1415,6 @@ IG_WEBSOCKET_API int IgWebSocket_server_handshake_reject_other(IgWebSocket* ws, 
    } while (n > 0);
    *p = '\0';
    
-   // Reverse the digits
    len = (int)(p - length_str);
    for (i = 0; i < len/2; i++) {
        char tmp = length_str[i];
@@ -1409,15 +1423,13 @@ IG_WEBSOCKET_API int IgWebSocket_server_handshake_reject_other(IgWebSocket* ws, 
    }
 
    
-   // Send response in parts
    if (!IgWebSocket__write_entire_buffer(ws, response_header, strlen(response_header))) return 0;
    if (!IgWebSocket__write_entire_buffer(ws, length_str, strlen(length_str))) return 0;
    if (!IgWebSocket__write_entire_buffer(ws, response_middle, strlen(response_middle))) return 0;
    if (!IgWebSocket__write_entire_buffer(ws, reason, reason_len)) return 0;
 
-   // Cleanup and close
    IgWebSocket__free_handshake_info(ws, handshake_info);
-   ws->closefn(ws->tcpsocket);
+   ws->socketio.closefn(ws->tcpsocket);
    ws->state = IG_WS_STATE_CLOSED;
    
    return 1;
@@ -1673,12 +1685,12 @@ static int32_t IgWebSocket__utf8_to_char32_fixed(unsigned char* ptr, size_t* siz
         *size = 2;
         uc = (c & 0x1F) << 6;
         c = *ptr;
-        // Overlong sequence or invalid second.
+        /* Overlong sequence or invalid second. */
         if (!uc || (c & 0xC0) != 0x80) return IG_WS_UTF8_INVALID;
         uc = uc + (c & 0x3F);
-        // maximum overlong sequence
+        /* maximum overlong sequence */
         if (uc <= 0x7F) return IG_WS_UTF8_INVALID;
-        // UTF-16 surrogate pairs
+        /* UTF-16 surrogate pairs */
         if (0xD800 <= uc && uc <= 0xDFFF) return IG_WS_UTF8_INVALID;
         return uc;
     }
@@ -1690,12 +1702,12 @@ static int32_t IgWebSocket__utf8_to_char32_fixed(unsigned char* ptr, size_t* siz
         if ((c & 0xC0) != 0x80) return IG_WS_UTF8_INVALID;
         uc += (c & 0x3F) << 6;
         c = ptr++[0];
-        // Overlong sequence or invalid last
+        /* Overlong sequence or invalid last */
         if (!uc || (c & 0xC0) != 0x80) return IG_WS_UTF8_INVALID;
         uc = uc + (c & 0x3F);
-        // maximum overlong sequence
+        /* maximum overlong sequence */
         if (uc <= 0x7FF) return IG_WS_UTF8_INVALID;
-        // UTF-16 surrogate pairs
+        /* UTF-16 surrogate pairs */
         if (0xD800 <= uc && uc <= 0xDFFF) return IG_WS_UTF8_INVALID;
         return uc;
     }
@@ -1710,14 +1722,14 @@ static int32_t IgWebSocket__utf8_to_char32_fixed(unsigned char* ptr, size_t* siz
     if ((c & 0xC0) != 0x80) return IG_WS_UTF8_INVALID;
     uc += (c & 0x3F) << 6;
     c = ptr++[0];
-    // Overlong sequence or invalid last
+    /* Overlong sequence or invalid last */
     if (!uc || (c & 0xC0) != 0x80) return IG_WS_UTF8_INVALID;
     uc = uc + (c & 0x3F);
-    // UTF-16 surrogate pairs
+    /* UTF-16 surrogate pairs */
     if (0xD800 <= uc && uc <= 0xDFFF) return IG_WS_UTF8_INVALID;
-    // maximum overlong sequence
+    /* maximum overlong sequence */
     if (uc <= 0xFFFF) return IG_WS_UTF8_INVALID;
-    // Maximum valid Unicode number
+    /* Maximum valid Unicode number */
     if (uc > 0x10FFFF) return IG_WS_UTF8_INVALID;
     return uc;
 }
@@ -1960,7 +1972,7 @@ static size_t IgWebSocket__read_frame_payload_chunk(IgWebSocket* ws, IgWebSocket
 
     if (finished_payload_len >= header->payload_len) return 0;
     unfinished_payload_len = header->payload_len - finished_payload_len;
-    bytes_read = ws->readfn(ws->tcpsocket, (char*)payload, unfinished_payload_len);
+    bytes_read = ws->socketio.readfn(ws->tcpsocket, (char*)payload, unfinished_payload_len);
     if (bytes_read == 0) {
         ws->error = IG_WS_CONNECTION_CLOSED;
         return 0;
@@ -1985,7 +1997,7 @@ static int IgWebSocket__read_frame_into_message(IgWebSocket* ws, IgWebSocketFram
     IgWebSocketMessage__extend_capacity(ws, message, header->payload_len);
     
     while (bytes_to_read) {
-        bytes_read = ws->readfn(ws->tcpsocket, (char*)(message->payload + message->payload_length), bytes_to_read);
+        bytes_read = ws->socketio.readfn(ws->tcpsocket, (char*)(message->payload + message->payload_length), bytes_to_read);
         if (bytes_read == 0) {
             ws->error = IG_WS_CONNECTION_CLOSED;
             return 0;
@@ -2017,7 +2029,7 @@ static int IgWebSocket__read_frame_into_payload_pointer(IgWebSocket* ws, IgWebSo
 
     
     while (bytes_to_read) {
-        bytes_read = ws->readfn(ws->tcpsocket, (char*)payload_buffer, bytes_to_read);
+        bytes_read = ws->socketio.readfn(ws->tcpsocket, (char*)payload_buffer, bytes_to_read);
         if (bytes_read == 0) {
             ws->error = IG_WS_CONNECTION_CLOSED;
             return 0;
@@ -2370,6 +2382,38 @@ IG_WEBSOCKET_API void IgWebSocket_free_message(IgWebSocket* ws, IgWebSocketMessa
     }
 }
 
+IG_WEBSOCKET_API int IgWebSocket_ping(IgWebSocket* ws) {
+    IgWebSocketFrameHeader header;
+    unsigned char buffer[125];
+    
+    header.fin = 1;
+    header.rsv1 = 0;
+    header.rsv2 = 0;
+    header.rsv3 = 0;
+    header.masked = 0;
+    header.opcode = IG_WS_OPCODE_PING;
+    header.payload_len = 4;
+    
+    if (!IgWebSocket__send_frame(ws, &header, "ping")) return 0;
+    if (!IgWebSocket__read_frame_header(ws, &header)) return 0;
+    if (!IgWebSocket__read_entire_buffer(ws, buffer, header.payload_len)) return 0;
+    
+    if (header.opcode != IG_WS_OPCODE_PONG) {
+        ws->error = IG_WS_PING_ROUTINE_FAILED;
+        return 0;
+    }
+    if (header.payload_len != 4) {
+        ws->error = IG_WS_PING_ROUTINE_FAILED;
+        return 0;
+    }
+    if (memcmp(buffer, "ping", 4) != 0) {
+        ws->error = IG_WS_PING_ROUTINE_FAILED;
+        return 0;
+    }
+    
+    return 1;
+}
+
 IG_WEBSOCKET_API void IgWebSocket_close(IgWebSocket* ws) {
     IgWebSocket_close_with_reason(ws, IG_WEBSOCKET_STATUS_NORMAL_CLOSURE, NULL, 0);
 }
@@ -2400,7 +2444,7 @@ IG_WEBSOCKET_API void IgWebSocket_close_with_reason(IgWebSocket* ws, unsigned in
     
     IgWebSocket__send_frame(ws, &header, close_frame);
     
-    ws->closefn(ws->tcpsocket);
+    ws->socketio.closefn(ws->tcpsocket);
     ws->state = IG_WS_STATE_CLOSED;
 }
 
