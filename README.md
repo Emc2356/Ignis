@@ -5,7 +5,7 @@ NOTE: windows version was tested on linux with mingw and wine
 
 | File | Description |
 |------|-------------|
-| [`ignis_arena.h`](ignis_arena.h) | arena implementation in C89 |
+| [`ignis_arena.h`](ignis_arena.h) | arena implementation |
 | [`ignis_filesystem.h`](ignis_filesystem.h) | an abstraction layer over basic filesystem operations |
 | [`ignis_process.h`](ignis_process.h) | an abstraction layer over process creation and management |
 | [`ignis_threading.h`](ignis_threading.h) | an abstraction layer over thread, mutex and semaphore creation and management |
