@@ -415,7 +415,7 @@ IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_yield(void) {
         IG_COROUTINE_ASM_PUSH(r13);
         IG_COROUTINE_ASM_PUSH(r14);
         IG_COROUTINE_ASM_PUSH(r15);
-        IG_COROUTINE_ASM_MOVE(rsp, rcx);
+        IG_COROUTINE_ASM_MOV(rsp, rcx);
         IG_COROUTINE_ASM_JMP(IgCoroutine_switch_context);
     #else
         #error "this platform isnt supported yet"
