@@ -231,6 +231,7 @@ void IgCoroutineScheduler_timeout(IgCoroutineFn func, void* arg,
 #include <windows.h>
 #else
 #include <time.h>
+#include <sys/mman.h>
 #endif
 
 #include <assert.h>
@@ -469,8 +470,6 @@ static void IgCoroutine__finish_current(void) {
     IgCoroutine_restore_context(IgCoroutine__contexts.contexts[IgCoroutine__active.indices[IgCoroutine__current]].rsp);
 }
 
-#include <sys/mman.h>
-
 static void* IgCoroutine__allocate_stack(size_t size) {
     void* ptr;
     
@@ -707,7 +706,6 @@ void IgCoroutine_join(void) {
         #endif
     }
     
-    #include <stdio.h>
     void IgCoroutineScheduler_join(long int ms_timeout) {
         int i;
         uint64_t now;
