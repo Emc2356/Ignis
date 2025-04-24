@@ -474,29 +474,7 @@ static void* IgCoroutine__allocate_stack(size_t size) {
     void* ptr;
     
     #ifdef _WIN32
-        SYSTEM_INFO si;
-        DWORD page_size;
-        DWORD protect_size;
-        void* guard_page;
-        if (!VirtualProtect(guard_page, page_size, PAGE_READWRITE | PAGE_GUARD, &old_protect)) {
-        
-        GetSystemInfo(&si);
-        page_size = si.dwPageSize;
-        
-        protect_size = (DWORD)size + page_size;
-        
-        ptr = VirtualAlloc(NULL, protect_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (ptr == NULL) {
-            return NULL;
-        }
-        
-        guard_page = ptr;
-        DWORD old_protect;
-            VirtualFree(ptr, 0, MEM_RELEASE);
-            return NULL;
-        }
-        
-        ptr = (char*)ptr + page_size;
+        ptr = malloc(size);
     #else /* _WIN32 */
         #ifdef __linux__
             ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, 
@@ -530,10 +508,8 @@ static void* IgCoroutine__allocate_stack(size_t size) {
 
 static void IgCoroutine__free_stack(void* stack, size_t size) {
     #ifdef _WIN32
-        SYSTEM_INFO si;
-        void* original_ptr = (char*)stack - si.dwPageSize;
-        GetSystemInfo(&si);
-        VirtualFree(original_ptr, 0, MEM_RELEASE);
+        (void) size;
+        free(stack);
     #else
         #ifdef __linux__
             munmap(stack, size);
