@@ -184,6 +184,16 @@ void IgCoroutine_timeout(IgCoroutineFn func, void* arg,
                          void* timeoutarg, 
                          unsigned int timeout_ms);
 /**
+ * @brief Attaches a timeout to a running coroutine.
+ * @param id ID of the coroutine to attach the timeout to.
+ * @param timeoutfn Callback invoked if the coroutine times out (optional).
+ * @param timeoutarg Argument passed to `timeoutfn`.
+ * @param timeout_ms Maximum runtime before termination (milliseconds).
+ */
+void IgCoroutine_attach_timeout(int id,
+                                IgCoroutineSchedulerTimeoutFn timeoutfn,  void* timeoutarg, 
+                                unsigned int timeout_ms);
+/**
  * @brief Creates a new unsignaled fence.
  * @return A new fence object (initially unsignaled, 0).
  */
@@ -851,16 +861,20 @@ void IgCoroutine_join(void) {
     }
     
     void IgCoroutine_timeout(IgCoroutineFn func, void* arg, IgCoroutineSchedulerTimeoutFn timeoutfn, void* timeoutarg, unsigned int timeout_ms) {
+        IgCoroutine_attach_timeout(IgCoroutine_start(func, arg), timeoutfn, timeoutarg, timeout_ms);
+    }
+    
+    
+    void IgCoroutine_attach_timeout(int id, IgCoroutineSchedulerTimeoutFn timeoutfn,  void* timeoutarg,  unsigned int timeout_ms) {
         IgCoroutineScheduler__ensure_new_task();
 
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].type = IG_COROUTINE_SCHEDULER_TASK_TYPE_TIMEOUT;
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].param.timeout.timeoutfn = timeoutfn;
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].param.timeout.arg = timeoutarg;
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].param.timeout.deadline = IgCoroutineScheduler__get_ms() + (uint64_t)timeout_ms;
-        IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].id = IgCoroutine_start(func, arg);
+        IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].id = id;
         IgCoroutineScheduler__tasks.size++;
     }
-    
     
     IgAsyncFence IgAsyncFence_create(void) {
         return 0;
