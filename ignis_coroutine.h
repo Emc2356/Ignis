@@ -92,10 +92,10 @@ int IgCoroutine_id(void);
  */
 int IgCoroutine_active_count(void);
 /**
- * @brief Gets the number of sleeping coroutines.
- * @return Count of coroutines in the sleeping queue.
+ * @brief Gets the number of suspended coroutines.
+ * @return Count of coroutines in the suspended queue.
  */
-int IgCoroutine_sleeping_count(void);
+int IgCoroutine_suspended_count(void);
 /**
  * @brief Suspends the execution of a coroutine.
  * @param id The ID of the coroutine to suspend.
@@ -138,11 +138,16 @@ void IgCoroutine_join(void);
  * @{
  */
 /**
+ * @brief Opaque fence type for coroutine synchronization.
+ * @details Used to block coroutines until a signal occurs.
+ */
+typedef long unsigned int IgAsyncFence;
+/**
  * @brief Guard function type for conditional coroutine wakeup.
  * @param arg User-provided argument.
  * @return 1 if the coroutine should wake, 0 to keep sleeping.
  */
-typedef int(*IgCorouineSchedulerGuardFn)(void* arg);
+typedef int(*IgCoroutineSchedulerGuardFn)(void* arg);
 /**
  * @brief Timeout callback function type.
  * @param arg User-provided argument passed during timeout setup.
@@ -151,7 +156,7 @@ typedef void(*IgCoroutineSchedulerTimeoutFn)(void* arg);
 /**
  * @brief similar to IgCoroutine_join but it adds the functionality of the scheduler.
  * @param ms_timeout Idle sleep duration (milliseconds) when no coroutines are active.
- * @warning Only one scheduler instance is allowed.
+ * @note this call is required in order to use any of the scheduler's features.
  */
 void IgCoroutineScheduler_join(long int ms_timeout);
 /**
@@ -159,13 +164,13 @@ void IgCoroutineScheduler_join(long int ms_timeout);
  * @param fn Guard function called periodically to check wakeup conditions.
  * @param arg Argument passed to `fn`.
  */
-void IgCoroutineScheduler_guard(IgCorouineSchedulerGuardFn fn, void* arg);
+void IgCoroutine_guard(IgCoroutineSchedulerGuardFn fn, void* arg);
 /**
  * @brief Suspends the current coroutine for a fixed duration.
  * @param ms Sleep duration in milliseconds.
  * @note Actual wakeup may be slightly delayed due to scheduler granularity.
  */
-void IgCoroutineScheduler_sleep(unsigned int ms);
+void IgCoroutine_sleep(unsigned int ms);
 /**
  * @brief Starts a coroutine with a timeout.
  * @param func Coroutine function to execute.
@@ -174,10 +179,44 @@ void IgCoroutineScheduler_sleep(unsigned int ms);
  * @param timeoutarg Argument passed to `timeoutfn`.
  * @param timeout_ms Maximum runtime before termination (milliseconds).
  */
-void IgCoroutineScheduler_timeout(IgCoroutineFn func, void* arg, 
-                                  IgCoroutineSchedulerTimeoutFn timeoutfn, 
-                                  void* timeoutarg, 
-                                  unsigned int timeout_ms);
+void IgCoroutine_timeout(IgCoroutineFn func, void* arg, 
+                         IgCoroutineSchedulerTimeoutFn timeoutfn, 
+                         void* timeoutarg, 
+                         unsigned int timeout_ms);
+/**
+ * @brief Creates a new unsignaled fence.
+ * @return A new fence object (initially unsignaled, 0).
+ */
+IgAsyncFence IgAsyncFence_create(void);
+/**
+ * @brief Resets a fence to unsignaled state (0).
+ * @param fence Fence to reset.
+ */
+void IgAsyncFence_reset(IgAsyncFence* fence);
+/**
+ * @brief Signals the fence (1), waking all waiting coroutines.
+ * @param fence Fence to signal.
+ * @note Safe to call multiple times (idempotent).
+ */
+void IgAsyncFence_signal(IgAsyncFence* fence);
+/**
+ * @brief Blocks the current coroutine until the fence is signaled.
+ * @param fence Fence to wait on.
+ */
+void IgAsyncFence_wait(IgAsyncFence* fence);
+/**
+ * @brief Checks if a fence has been signaled.
+ * @param fence Fence to check.
+ * @return 1 if signaled, 0 otherwise.
+ */
+int IgAsyncFence_is_signalled(IgAsyncFence* fence);
+/**
+ * @brief Waits with a timeout.
+ * @param fence Fence to wait on.
+ * @param timeout_ms Maximum wait time (milliseconds).
+ * @return 1 if signaled, 0 if timeout occurred.
+ */
+int IgAsyncFence_wait_timeout(IgAsyncFence* fence, long int timeout_ms);
 /** @} */ /* End of scheduler_api group */
 #endif /* IG_COROUTINE_DISABLE_SCHEDULER */
 
@@ -583,7 +622,7 @@ int IgCoroutine_active_count(void) {
     return (int)IgCoroutine__active.size;
 }
 
-int IgCoroutine_sleeping_count(void) {
+int IgCoroutine_suspended_count(void) {
     return (int)IgCoroutine__sleeping.size;
 }
 
@@ -636,33 +675,46 @@ void IgCoroutine_join(void) {
     while (IgCoroutine_active_count() > 1) IgCoroutine_yield();
 }
 
-
 #ifndef IG_COROUTINE_DISABLE_SCHEDULER
     typedef enum IgCorouineSchedulerTaskType {
         IG_COROUTINE_SCHEDULER_TASK_TYPE_GUARD,
         IG_COROUTINE_SCHEDULER_TASK_TYPE_DEADLINE,
-        IG_COROUTINE_SCHEDULER_TASK_TYPE_TIMEOUT
+        IG_COROUTINE_SCHEDULER_TASK_TYPE_TIMEOUT,
+        IG_COROUTINE_SCHEDULER_TASK_TYPE_FENCE,
+        IG_COROUTINE_SCHEDULER_TASK_TYPE_FENCE_TIMEOUT
     } IgCorouineSchedulerTaskType;
     
     typedef union IgCorouineSchedulerTaskParam {
-        void* guard;
+        /* IG_COROUTINE_SCHEDULER_TASK_TYPE_GUARD */
+        struct {
+            IgCoroutineSchedulerGuardFn fn;
+            void* arg;
+        } guard;
+        /* IG_COROUTINE_SCHEDULER_TASK_TYPE_DEADLINE */
         uint64_t deadline;
+        /* IG_COROUTINE_SCHEDULER_TASK_TYPE_TIMEOUT */
         struct {
             IgCoroutineSchedulerTimeoutFn timeoutfn;
             void* arg;
             uint64_t deadline;
         } timeout;
+        /* IG_COROUTINE_SCHEDULER_TASK_TYPE_FENCE */
+        IgAsyncFence* fence;
+        /* IG_COROUTINE_SCHEDULER_TASK_TYPE_FENCE_TIMEOUT */
+        struct {
+            IgAsyncFence* fence;
+            uint64_t deadline;
+        } fence_timeout;
     } IgCorouineSchedulerTaskParam;
     
     typedef struct IgCorouineSchedulerTask {
         IgCorouineSchedulerTaskType type;
-        IgCorouineSchedulerGuardFn guard;
         IgCorouineSchedulerTaskParam param;
         int id;
-    } IgCorouineSchedulerTask;
+    } IgCoroutineSchedulerTask;
     
     typedef struct IgCorouineSchedulerTasks {
-        IgCorouineSchedulerTask* tasks;
+        IgCoroutineSchedulerTask* tasks;
         size_t size;
         size_t capacity;
     } IgCorouineSchedulerTasks;
@@ -685,6 +737,7 @@ void IgCoroutine_join(void) {
     void IgCoroutineScheduler_join(long int ms_timeout) {
         int i;
         uint64_t now;
+        IgCoroutineSchedulerTask task;
         #ifndef _WIN32
             struct timespec ts;
             ts.tv_sec = ms_timeout / 1000;
@@ -696,32 +749,55 @@ void IgCoroutine_join(void) {
         while ((size_t)IgCoroutine_active_count() + IgCoroutineScheduler__tasks.size > 1) {
             now = IgCoroutineScheduler__get_ms();
             for (i = 0; i < (int)IgCoroutineScheduler__tasks.size;) {
-                if (IgCoroutineScheduler__tasks.tasks[i].type == IG_COROUTINE_SCHEDULER_TASK_TYPE_GUARD) {
-                    if (IgCoroutineScheduler__tasks.tasks[i].guard(IgCoroutineScheduler__tasks.tasks[i].param.guard)) {
-                        IgCoroutine_resume(IgCoroutineScheduler__tasks.tasks[i].id);
+                task = IgCoroutineScheduler__tasks.tasks[i];
+                
+                if (task.type == IG_COROUTINE_SCHEDULER_TASK_TYPE_GUARD) {
+                    if (task.param.guard.fn(task.param.guard.arg)) {
+                        IgCoroutine_resume(task.id);
                         IgCoroutineScheduler__tasks.tasks[i] = IgCoroutineScheduler__tasks.tasks[--IgCoroutineScheduler__tasks.size];
                         continue;
                     } else {
-                        IgCoroutine_suspend(IgCoroutineScheduler__tasks.tasks[i].id);
+                        IgCoroutine_suspend(task.id);
                     }
-                } else if (IgCoroutineScheduler__tasks.tasks[i].type == IG_COROUTINE_SCHEDULER_TASK_TYPE_DEADLINE) {
-                    if (IgCoroutineScheduler__tasks.tasks[i].param.deadline <= now) {
-                        IgCoroutine_resume(IgCoroutineScheduler__tasks.tasks[i].id);
+                } else if (task.type == IG_COROUTINE_SCHEDULER_TASK_TYPE_DEADLINE) {
+                    if (task.param.deadline <= now) {
+                        IgCoroutine_resume(task.id);
                         IgCoroutineScheduler__tasks.tasks[i] = IgCoroutineScheduler__tasks.tasks[--IgCoroutineScheduler__tasks.size];
                         continue;
                     } else {
-                        IgCoroutine_suspend(IgCoroutineScheduler__tasks.tasks[i].id);
+                        IgCoroutine_suspend(task.id);
                     }
-                } else if (IgCoroutineScheduler__tasks.tasks[i].type == IG_COROUTINE_SCHEDULER_TASK_TYPE_TIMEOUT) {
-                    if (IgCoroutineScheduler__tasks.tasks[i].param.timeout.deadline < now) {
-                        if (IgCoroutineScheduler__tasks.tasks[i].param.timeout.timeoutfn != NULL) {
-                            IgCoroutineScheduler__tasks.tasks[i].param.timeout.timeoutfn(IgCoroutineScheduler__tasks.tasks[i].param.timeout.arg);
+                } else if (task.type == IG_COROUTINE_SCHEDULER_TASK_TYPE_TIMEOUT) {
+                    if (task.param.timeout.deadline < now) {
+                        if (task.param.timeout.timeoutfn != NULL) {
+                            task.param.timeout.timeoutfn(task.param.timeout.arg);
                         }
-                        IgCoroutine_terminate(IgCoroutineScheduler__tasks.tasks[i].id);
+                        IgCoroutine_terminate(task.id);
                         IgCoroutineScheduler__tasks.tasks[i] = IgCoroutineScheduler__tasks.tasks[--IgCoroutineScheduler__tasks.size];
                         continue;
                     }
-                }
+                } else if (task.type == IG_COROUTINE_SCHEDULER_TASK_TYPE_FENCE) {
+                    if (*task.param.fence == 1) {
+                        IgCoroutine_resume(task.id);
+                        IgCoroutineScheduler__tasks.tasks[i] = IgCoroutineScheduler__tasks.tasks[--IgCoroutineScheduler__tasks.size];
+                        continue;
+                    } else {
+                        IgCoroutine_suspend(task.id);
+                    }
+                } else if (task.type == IG_COROUTINE_SCHEDULER_TASK_TYPE_FENCE_TIMEOUT) {
+                    if (*task.param.fence_timeout.fence == 1) {
+                        IgCoroutine_resume(task.id);
+                        IgCoroutineScheduler__tasks.tasks[i] = IgCoroutineScheduler__tasks.tasks[--IgCoroutineScheduler__tasks.size];
+                        continue;
+                    } else {
+                        IgCoroutine_suspend(task.id);
+                    }
+                    if (task.param.fence_timeout.deadline < now) {
+                        IgCoroutine_resume(task.id);
+                        IgCoroutineScheduler__tasks.tasks[i] = IgCoroutineScheduler__tasks.tasks[--IgCoroutineScheduler__tasks.size];
+                        continue;
+                    }
+                } 
                 
                 i++;
             }
@@ -739,30 +815,33 @@ void IgCoroutine_join(void) {
         }
     }
     
-    void IgCoroutineScheduler_guard(IgCorouineSchedulerGuardFn fn, void* arg) {
+    static void IgCoroutineScheduler__ensure_new_task(void) {
+        if (IgCoroutineScheduler__tasks.size >= IgCoroutineScheduler__tasks.capacity) {
+            IgCoroutineScheduler__tasks.capacity = IgCoroutineScheduler__tasks.capacity ? IgCoroutineScheduler__tasks.capacity * 2 : 1;
+            IgCoroutineScheduler__tasks.tasks = realloc(IgCoroutineScheduler__tasks.tasks, IgCoroutineScheduler__tasks.capacity * sizeof(*IgCoroutineScheduler__tasks.tasks));
+        }
+    }
+    
+    void IgCoroutine_guard(IgCoroutineSchedulerGuardFn fn, void* arg) {
         /* if it can continue right away ignis will not yield the cpu */
         if (fn(arg)) {
             return;
         }
         
-        if (IgCoroutineScheduler__tasks.size == IgCoroutineScheduler__tasks.capacity) {
-            IgCoroutineScheduler__tasks.capacity = IgCoroutineScheduler__tasks.capacity ? IgCoroutineScheduler__tasks.capacity * 2 : 1;
-            IgCoroutineScheduler__tasks.tasks = realloc(IgCoroutineScheduler__tasks.tasks, IgCoroutineScheduler__tasks.capacity * sizeof(*IgCoroutineScheduler__tasks.tasks));
-        }
-        IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].guard = fn;
+        IgCoroutineScheduler__ensure_new_task();
+        
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].type = IG_COROUTINE_SCHEDULER_TASK_TYPE_GUARD;
-        IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].param.guard = arg;
+        IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].param.guard.fn = fn;
+        IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].param.guard.arg = arg;
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].id = IgCoroutine_id();
         IgCoroutineScheduler__tasks.size++;
         
         IgCoroutine_yield();
     }
     
-    void IgCoroutineScheduler_sleep(unsigned int ms) {
-        if (IgCoroutineScheduler__tasks.size == IgCoroutineScheduler__tasks.capacity) {
-            IgCoroutineScheduler__tasks.capacity = IgCoroutineScheduler__tasks.capacity ? IgCoroutineScheduler__tasks.capacity * 2 : 1;
-            IgCoroutineScheduler__tasks.tasks = realloc(IgCoroutineScheduler__tasks.tasks, IgCoroutineScheduler__tasks.capacity * sizeof(*IgCoroutineScheduler__tasks.tasks));
-        }
+    void IgCoroutine_sleep(unsigned int ms) {
+        IgCoroutineScheduler__ensure_new_task();
+
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].type = IG_COROUTINE_SCHEDULER_TASK_TYPE_DEADLINE;
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].param.deadline = IgCoroutineScheduler__get_ms() + (uint64_t)ms;
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].id = IgCoroutine_id();
@@ -771,17 +850,61 @@ void IgCoroutine_join(void) {
         IgCoroutine_yield();
     }
     
-    void IgCoroutineScheduler_timeout(IgCoroutineFn func, void* arg, IgCoroutineSchedulerTimeoutFn timeoutfn, void* timeoutarg, unsigned int timeout_ms) {
-        if (IgCoroutineScheduler__tasks.size == IgCoroutineScheduler__tasks.capacity) {
-            IgCoroutineScheduler__tasks.capacity = IgCoroutineScheduler__tasks.capacity ? IgCoroutineScheduler__tasks.capacity * 2 : 1;
-            IgCoroutineScheduler__tasks.tasks = realloc(IgCoroutineScheduler__tasks.tasks, IgCoroutineScheduler__tasks.capacity * sizeof(*IgCoroutineScheduler__tasks.tasks));
-        }
+    void IgCoroutine_timeout(IgCoroutineFn func, void* arg, IgCoroutineSchedulerTimeoutFn timeoutfn, void* timeoutarg, unsigned int timeout_ms) {
+        IgCoroutineScheduler__ensure_new_task();
+
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].type = IG_COROUTINE_SCHEDULER_TASK_TYPE_TIMEOUT;
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].param.timeout.timeoutfn = timeoutfn;
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].param.timeout.arg = timeoutarg;
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].param.timeout.deadline = IgCoroutineScheduler__get_ms() + (uint64_t)timeout_ms;
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].id = IgCoroutine_start(func, arg);
         IgCoroutineScheduler__tasks.size++;
+    }
+    
+    
+    IgAsyncFence IgAsyncFence_create(void) {
+        return 0;
+    }
+    
+    void IgAsyncFence_reset(IgAsyncFence* fence) {
+        *fence = 0;
+    }
+    
+    void IgAsyncFence_signal(IgAsyncFence* fence) {
+        *fence = 1;
+    }
+    
+    void IgAsyncFence_wait(IgAsyncFence* fence) {
+        if (*fence == 1) return;
+        
+        IgCoroutineScheduler__ensure_new_task();
+        
+        IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].type = IG_COROUTINE_SCHEDULER_TASK_TYPE_FENCE;
+        IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].param.fence = fence;
+        IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].id = IgCoroutine_id();
+        IgCoroutineScheduler__tasks.size++;
+
+        IgCoroutine_yield();
+    }
+    
+    int IgAsyncFence_is_signalled(IgAsyncFence* fence) {
+        return *fence == 1;
+    }
+    
+    int IgAsyncFence_wait_timeout(IgAsyncFence* fence, long int timeout_ms) {
+        if (*fence == 1) return 1;
+        
+        IgCoroutineScheduler__ensure_new_task();
+        
+        IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].type = IG_COROUTINE_SCHEDULER_TASK_TYPE_FENCE_TIMEOUT;
+        IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].param.fence_timeout.fence = fence;
+        IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].param.fence_timeout.deadline = IgCoroutineScheduler__get_ms() + (uint64_t)timeout_ms;
+        IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].id = IgCoroutine_id();
+        IgCoroutineScheduler__tasks.size++;
+
+        IgCoroutine_yield();
+        
+        return *fence == 1;
     }
 #endif /* IG_COROUTINE_DISABLE_SCHEDULER */
 
