@@ -103,6 +103,11 @@ int IgCoroutine_suspended_count(void);
  */
 void IgCoroutine_suspend(int id);
 /**
+ * @brief Suspends the execution of the current coroutine.
+ * @note functions the same as IgCoroutine_suspend(IgCoroutine_id()) but it avoids extra searching.
+ */
+void IgCoroutine_suspend_self(void);
+/**
  * @brief Resumes the execution of a suspended coroutine.
  * @param id The ID of the coroutine to resume.
  * @note The coroutine re-enters the active queue.
@@ -414,7 +419,7 @@ typedef struct IgCoroutineIndices {
 
 static IgCoroutineIndices  IgCoroutine__active   = {0};
 static IgCoroutineIndices  IgCoroutine__dead     = {0};
-static IgCoroutineIndices  IgCoroutine__sleeping = {0};
+static IgCoroutineIndices  IgCoroutine__suspended = {0};
 static IgCoroutineContexts IgCoroutine__contexts = {0};
 static int                 IgCoroutine__current  =  0 ;
 
@@ -471,6 +476,35 @@ IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_yield(void) {
     #endif
 }
 
+/* the exact same as IgCoroutine_yield but jumps to IgCoroutine_suspend_self_switch_context */
+IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_suspend_self(void) {
+    #if defined(IG_COROUTINE_X86_64_LINUX)
+        IG_COROUTINE_ASM_PUSH(rdi);
+        IG_COROUTINE_ASM_PUSH(rbp);
+        IG_COROUTINE_ASM_PUSH(rbx);
+        IG_COROUTINE_ASM_PUSH(r12);
+        IG_COROUTINE_ASM_PUSH(r13);
+        IG_COROUTINE_ASM_PUSH(r14);
+        IG_COROUTINE_ASM_PUSH(r15);
+        IG_COROUTINE_ASM_MOV(rsp, rdi);
+        IG_COROUTINE_ASM_JMP(IgCoroutine_suspend_self_switch_context);
+    #elif defined(IG_COROUTINE_X86_64_WINDOWS)
+        IG_COROUTINE_ASM_PUSH(rcx);
+        IG_COROUTINE_ASM_PUSH(rbx);
+        IG_COROUTINE_ASM_PUSH(rbp);
+        IG_COROUTINE_ASM_PUSH(rdi);
+        IG_COROUTINE_ASM_PUSH(rsi);
+        IG_COROUTINE_ASM_PUSH(r12);
+        IG_COROUTINE_ASM_PUSH(r13);
+        IG_COROUTINE_ASM_PUSH(r14);
+        IG_COROUTINE_ASM_PUSH(r15);
+        IG_COROUTINE_ASM_MOV(rsp, rcx);
+        IG_COROUTINE_ASM_JMP(IgCoroutine_suspend_self_switch_context);
+    #else
+        #error "this platform isnt supported yet"
+    #endif
+}
+
 static IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_restore_context(void *rsp IG_COROUTINE_UNUSED) {
     /* to call restore_context means that yield was called and the return address is saved
      * so it only needs to reverse the yield operation and return */
@@ -503,9 +537,20 @@ static IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_restore_context
     #endif
 }
 
-static IG_COROUTINE_NOINLINE IG_COROUTINE_KEEP_FUNCTION void IgCoroutine_switch_context(void *rsp) {
+static IG_COROUTINE_NOINLINE IG_COROUTINE_KEEP_FUNCTION void IgCoroutine_switch_context(void* rsp) {
     IgCoroutine__contexts.contexts[IgCoroutine__active.indices[IgCoroutine__current]].rsp = rsp;
 
+    IgCoroutine__current = (IgCoroutine__current + 1) % (int)IgCoroutine__active.size;
+
+    IgCoroutine_restore_context(IgCoroutine__contexts.contexts[IgCoroutine__active.indices[IgCoroutine__current]].rsp);
+}
+
+static IG_COROUTINE_NOINLINE IG_COROUTINE_KEEP_FUNCTION void IgCoroutine_suspend_self_switch_context(void* rsp) {
+    IgCoroutine__contexts.contexts[IgCoroutine__active.indices[IgCoroutine__current]].rsp = rsp;
+
+    IgCoroutineIndices__append(&IgCoroutine__suspended, IgCoroutine__active.indices[IgCoroutine__current]);
+    IgCoroutineIndices__pop(&IgCoroutine__active, (size_t)IgCoroutine__current);
+    
     IgCoroutine__current = (IgCoroutine__current + 1) % (int)IgCoroutine__active.size;
 
     IgCoroutine_restore_context(IgCoroutine__contexts.contexts[IgCoroutine__active.indices[IgCoroutine__current]].rsp);
@@ -532,7 +577,6 @@ static void* IgCoroutine__allocate_stack(size_t size) {
             if (ptr == MAP_FAILED) {
                 return NULL;
             }
-            
         #else /* __linux__ */
             size_t page_size = (size_t)getpagesize();
             
@@ -543,7 +587,7 @@ static void* IgCoroutine__allocate_stack(size_t size) {
                 return NULL;
             }
             
-            // Add manual guard page for non-Linux POSIX systems
+            /* Add manual guard page for non-Linux POSIX systems */
             if (mprotect(ptr, page_size, PROT_NONE)) {
                 munmap(ptr, size + page_size);
                 return NULL;
@@ -633,16 +677,36 @@ int IgCoroutine_active_count(void) {
 }
 
 int IgCoroutine_suspended_count(void) {
-    return (int)IgCoroutine__sleeping.size;
+    return (int)IgCoroutine__suspended.size;
 }
 
 void IgCoroutine_suspend(int id) {
-    size_t i;
+    int i;
     
-    for (i = 0; i < IgCoroutine__active.size; i++) {
+    if (IgCoroutine__active.indices[IgCoroutine__current] == id) {
+        IgCoroutine_suspend_self();
+        return;
+    }
+    
+    for (i = 0; i < (int)IgCoroutine__active.size; i++) {
         if (IgCoroutine__active.indices[i] == id) {
-            IgCoroutineIndices__pop(&IgCoroutine__active, i);
-            IgCoroutineIndices__append(&IgCoroutine__sleeping, id);
+            /* IgCoroutine__current | i [ | end] */
+            if (i > IgCoroutine__current) {
+                
+            /* i | IgCoroutine__current [ | end] */
+            } else if (i < IgCoroutine__current) {
+                /* since it is an unordered pop if the current is the last then we make the current i */
+                if (IgCoroutine__current == (int)IgCoroutine__active.size - 1) {
+                    IgCoroutine__current = i;
+                } else {
+                    IgCoroutine__current -= 1;
+                }
+            } else {
+                /* IgCoroutine_suspend_self(); */
+            }
+            
+            IgCoroutineIndices__pop(&IgCoroutine__active, (size_t)i);
+            IgCoroutineIndices__append(&IgCoroutine__suspended, id);
             return;
         }
     }
@@ -650,9 +714,9 @@ void IgCoroutine_suspend(int id) {
 
 void IgCoroutine_resume(int id) {
     size_t i;
-    for (i = 0; i < IgCoroutine__sleeping.size; i++) {
-        if (IgCoroutine__sleeping.indices[i] == id) {
-            IgCoroutineIndices__pop(&IgCoroutine__sleeping, i);
+    for (i = 0; i < IgCoroutine__suspended.size; i++) {
+        if (IgCoroutine__suspended.indices[i] == id) {
+            IgCoroutineIndices__pop(&IgCoroutine__suspended, i);
             IgCoroutineIndices__append(&IgCoroutine__active, id);
             return;
         }
@@ -660,21 +724,36 @@ void IgCoroutine_resume(int id) {
 }
 
 void IgCoroutine_terminate(int id) {
-    size_t i;
+    int i;
     if (id == IgCoroutine_id()) {
         IgCoroutine__finish_current();
         return;
     }
-    for (i = 0; i < IgCoroutine__active.size; i++) {
+    for (i = 0; i < (int)IgCoroutine__active.size; i++) {
         if (IgCoroutine__active.indices[i] == id) {
-            IgCoroutineIndices__pop(&IgCoroutine__active, i);
+            /* IgCoroutine__current | i [ | end] */
+            if (i > IgCoroutine__current) {
+                
+            /* i | IgCoroutine__current [ | end] */
+            } else if (i < IgCoroutine__current) {
+                /* since it is an unordered pop if the current is the last then we make the current i */
+                if (IgCoroutine__current == (int)IgCoroutine__active.size - 1) {
+                    IgCoroutine__current = i;
+                } else {
+                    IgCoroutine__current -= 1;
+                }
+            } else {
+                /* IgCoroutine__finish_current(); */
+            }
+            
+            IgCoroutineIndices__pop(&IgCoroutine__active, (size_t)i);
             IgCoroutineIndices__append(&IgCoroutine__dead, id);
             return;
         }
     }
-    for (i = 0; i < IgCoroutine__sleeping.size; i++) {
-        if (IgCoroutine__sleeping.indices[i] == id) {
-            IgCoroutineIndices__pop(&IgCoroutine__sleeping, i);
+    for (i = 0; i < (int)IgCoroutine__suspended.size; i++) {
+        if (IgCoroutine__suspended.indices[i] == id) {
+            IgCoroutineIndices__pop(&IgCoroutine__suspended, (size_t)i);
             IgCoroutineIndices__append(&IgCoroutine__dead, id);
             return;
         }
@@ -734,8 +813,9 @@ void IgCoroutine_join(void) {
     static uint64_t IgCoroutineScheduler__get_ms(void) {
         #ifdef _WIN32
             FILETIME ft;
+            uint64_t time;
             GetSystemTimeAsFileTime(&ft);
-            uint64_t time = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+            time = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
             return time / 10000 - 11644473600000LL; /* Convert to Unix time in milliseconds */
         #else
             struct timespec ts;
@@ -766,16 +846,12 @@ void IgCoroutine_join(void) {
                         IgCoroutine_resume(task.id);
                         IgCoroutineScheduler__tasks.tasks[i] = IgCoroutineScheduler__tasks.tasks[--IgCoroutineScheduler__tasks.size];
                         continue;
-                    } else {
-                        IgCoroutine_suspend(task.id);
                     }
                 } else if (task.type == IG_COROUTINE_SCHEDULER_TASK_TYPE_DEADLINE) {
                     if (task.param.deadline <= now) {
                         IgCoroutine_resume(task.id);
                         IgCoroutineScheduler__tasks.tasks[i] = IgCoroutineScheduler__tasks.tasks[--IgCoroutineScheduler__tasks.size];
                         continue;
-                    } else {
-                        IgCoroutine_suspend(task.id);
                     }
                 } else if (task.type == IG_COROUTINE_SCHEDULER_TASK_TYPE_TIMEOUT) {
                     if (task.param.timeout.deadline < now) {
@@ -791,18 +867,9 @@ void IgCoroutine_join(void) {
                         IgCoroutine_resume(task.id);
                         IgCoroutineScheduler__tasks.tasks[i] = IgCoroutineScheduler__tasks.tasks[--IgCoroutineScheduler__tasks.size];
                         continue;
-                    } else {
-                        IgCoroutine_suspend(task.id);
                     }
                 } else if (task.type == IG_COROUTINE_SCHEDULER_TASK_TYPE_FENCE_TIMEOUT) {
-                    if (*task.param.fence_timeout.fence == 1) {
-                        IgCoroutine_resume(task.id);
-                        IgCoroutineScheduler__tasks.tasks[i] = IgCoroutineScheduler__tasks.tasks[--IgCoroutineScheduler__tasks.size];
-                        continue;
-                    } else {
-                        IgCoroutine_suspend(task.id);
-                    }
-                    if (task.param.fence_timeout.deadline < now) {
+                    if (*task.param.fence_timeout.fence == 1 || task.param.fence_timeout.deadline < now) {
                         IgCoroutine_resume(task.id);
                         IgCoroutineScheduler__tasks.tasks[i] = IgCoroutineScheduler__tasks.tasks[--IgCoroutineScheduler__tasks.size];
                         continue;
@@ -812,8 +879,8 @@ void IgCoroutine_join(void) {
                 i++;
             }
             
-            if (IgCoroutine_active_count() == 1) {
-                /* if it is the only true coroutine running then wait for new events to appear */
+            if (IgCoroutine_active_count() == 1 && ms_timeout > 0) {
+                /* if there are no coroutines running then wait for new events to appear */
                 #ifdef _WIN32
                     Sleep(ms_timeout);
                 #else /* _WIN32 */
@@ -846,7 +913,7 @@ void IgCoroutine_join(void) {
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].id = IgCoroutine_id();
         IgCoroutineScheduler__tasks.size++;
         
-        IgCoroutine_yield();
+        IgCoroutine_suspend_self();
     }
     
     void IgCoroutine_sleep(unsigned int ms) {
@@ -857,13 +924,12 @@ void IgCoroutine_join(void) {
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].id = IgCoroutine_id();
         IgCoroutineScheduler__tasks.size++;
         
-        IgCoroutine_yield();
+        IgCoroutine_suspend_self();
     }
     
     void IgCoroutine_timeout(IgCoroutineFn func, void* arg, IgCoroutineSchedulerTimeoutFn timeoutfn, void* timeoutarg, unsigned int timeout_ms) {
         IgCoroutine_attach_timeout(IgCoroutine_start(func, arg), timeoutfn, timeoutarg, timeout_ms);
     }
-    
     
     void IgCoroutine_attach_timeout(int id, IgCoroutineSchedulerTimeoutFn timeoutfn,  void* timeoutarg,  unsigned int timeout_ms) {
         IgCoroutineScheduler__ensure_new_task();
@@ -898,7 +964,7 @@ void IgCoroutine_join(void) {
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].id = IgCoroutine_id();
         IgCoroutineScheduler__tasks.size++;
 
-        IgCoroutine_yield();
+        IgCoroutine_suspend_self();
     }
     
     int IgAsyncFence_is_signalled(IgAsyncFence* fence) {
@@ -916,7 +982,7 @@ void IgCoroutine_join(void) {
         IgCoroutineScheduler__tasks.tasks[IgCoroutineScheduler__tasks.size].id = IgCoroutine_id();
         IgCoroutineScheduler__tasks.size++;
 
-        IgCoroutine_yield();
+        IgCoroutine_suspend_self();
         
         return *fence == 1;
     }
