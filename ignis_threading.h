@@ -83,7 +83,7 @@ IG_THREADING_API void IgSemaphore_post(IgSemaphore* semaphore);
 
 #endif /* IGNIS__THREADING_H */
 
-#ifdef IG_PROCESS_IMPLEMENTATION
+#ifdef IG_THREADING_IMPLEMENTATION
 
 /* errors with -Weverything */
 #ifdef __clang__
@@ -481,4 +481,4 @@ IG_THREADING_API void IgSemaphore_post(IgSemaphore* semaphore) {
 #pragma clang diagnostic pop
 #endif /* __clang__ */
 
-#endif /* IG_PROCESS_IMPLEMENTATION */
+#endif /* IG_THREADING_IMPLEMENTATION */
