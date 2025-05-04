@@ -411,6 +411,7 @@ typedef struct IgCoroutineContexts {
     size_t capacity;
 } IgCoroutineContexts;
 
+/* the IDs must be stable */
 typedef struct IgCoroutineIndices {
     int* indices;
     size_t size;
@@ -471,6 +472,20 @@ IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_yield(void) {
         IG_COROUTINE_ASM_PUSH(r15);
         IG_COROUTINE_ASM_MOV(rsp, rcx);
         IG_COROUTINE_ASM_JMP(IgCoroutine_switch_context);
+    #elif defined(IG_COROUTINE_AARCH64_LINUX)
+        asm("	sub sp,  sp,  #240\n"
+            "   stp q8, q9, [sp,#0]\n"
+            "   stp q10, q11, [sp,#32]\n"
+            "   stp q12, q13, [sp,#64]\n"
+            "   stp q14, q15, [sp,#96]\n"
+            "   stp x19, x20, [sp,#128]\n"
+            "   stp x21, x22, [sp,#144]\n"
+            "   stp x23, x24, [sp,#160]\n"
+            "   stp x25, x26, [sp,#176]\n"
+            "   stp x27, x28, [sp,#192]\n"
+            "   stp x29, x30, [sp,#208]\n"
+            "	mov x0, sp\n"
+            "   b IgCoroutine_switch_context\n");
     #else
         #error "this platform isnt supported yet"
     #endif
@@ -500,6 +515,20 @@ IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_suspend_self(void) {
         IG_COROUTINE_ASM_PUSH(r15);
         IG_COROUTINE_ASM_MOV(rsp, rcx);
         IG_COROUTINE_ASM_JMP(IgCoroutine_suspend_self_switch_context);
+    #elif defined(IG_COROUTINE_AARCH64_LINUX)
+        asm("	sub sp,  sp,  #240\n"
+            "   stp q8, q9, [sp,#0]\n"
+            "   stp q10, q11, [sp,#32]\n"
+            "   stp q12, q13, [sp,#64]\n"
+            "   stp q14, q15, [sp,#96]\n"
+            "   stp x19, x20, [sp,#128]\n"
+            "   stp x21, x22, [sp,#144]\n"
+            "   stp x23, x24, [sp,#160]\n"
+            "   stp x25, x26, [sp,#176]\n"
+            "   stp x27, x28, [sp,#192]\n"
+            "   stp x29, x30, [sp,#208]\n"
+            "	mov x0, sp\n"
+            "   b IgCoroutine_suspend_self_switch_context\n");
     #else
         #error "this platform isnt supported yet"
     #endif
@@ -532,6 +561,23 @@ static IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_restore_context
         IG_COROUTINE_ASM_POP(rbx);
         IG_COROUTINE_ASM_POP(rcx);
         IG_COROUTINE_ASM_RET();
+    #elif defined(IG_COROUTINE_AARCH64_LINUX)
+        asm("   mov sp, x0\n"
+            "   ldp q8, q9, [sp,#0]\n"
+            "   ldp q10, q11, [sp,#32]\n"
+            "   ldp q12, q13, [sp,#64]\n"
+            "   ldp q14, q15, [sp,#96]\n"
+            "   ldp x19, x20, [sp,#128]\n"
+            "   ldp x21, x22, [sp,#144]\n"
+            "   ldp x23, x24, [sp,#160]\n"
+            "   ldp x25, x26, [sp,#176]\n"
+            "   ldp x27, x28, [sp,#192]\n"
+            "   ldp x29, x30, [sp,#208]\n"
+            "   mov x1, x30\n"
+            "   ldr x30, [sp, #224]\n"
+            "   ldr x0, [sp, #232]\n"
+            "   add sp, sp, #240\n"
+            "   ret x1\n");
     #else
         #error "this platform isnt supported yet"
     #endif
@@ -658,6 +704,37 @@ int IgCoroutine_start(IgCoroutineFn func, void* arg) {
         *(--rsp) = 0;   /* push r13 */
         *(--rsp) = 0;   /* push r14 */
         *(--rsp) = 0;   /* push r15 */
+    #elif defined(IG_COROUTINE_AARCH64_LINUX)
+        *(--rsp) = arg;
+        *(--rsp) = (void*)(uintptr_t)IgCoroutine__finish_current;
+        *(--rsp) = (void*)(uintptr_t)func; /* push r0 */
+        *(--rsp) = 0;   /* push r29 */
+        *(--rsp) = 0;   /* push r28 */
+        *(--rsp) = 0;   /* push r27 */
+        *(--rsp) = 0;   /* push r26 */
+        *(--rsp) = 0;   /* push r25 */
+        *(--rsp) = 0;   /* push r24 */
+        *(--rsp) = 0;   /* push r23 */
+        *(--rsp) = 0;   /* push r22 */
+        *(--rsp) = 0;   /* push r21 */
+        *(--rsp) = 0;   /* push r20 */
+        *(--rsp) = 0;   /* push r19 */
+        *(--rsp) = 0;   /* push v15 */
+        *(--rsp) = 0;   
+        *(--rsp) = 0;   /* push v14 */
+        *(--rsp) = 0;   
+        *(--rsp) = 0;   /* push v13 */
+        *(--rsp) = 0;   
+        *(--rsp) = 0;   /* push v12 */
+        *(--rsp) = 0;   
+        *(--rsp) = 0;   /* push v11 */
+        *(--rsp) = 0;   
+        *(--rsp) = 0;   /* push v10 */
+        *(--rsp) = 0;   
+        *(--rsp) = 0;   /* push v09 */
+        *(--rsp) = 0;   
+        *(--rsp) = 0;   /* push v08 */
+        *(--rsp) = 0;   
     #else 
         #error "this platform is not supported yet"
     #endif 
