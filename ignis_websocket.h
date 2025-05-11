@@ -102,11 +102,13 @@ typedef int(*IgWebSocketReadFn)(void* tcpsocket, char* buffer, size_t buffer_siz
 typedef int(*IgWebSocketPeekFn)(void* tcpsocket, char* buffer, size_t buffer_size);
 typedef int(*IgWebSocketWriteFn)(void* tcpsocket, const char* buffer, size_t buffer_size);
 typedef void(*IgWebSocketCloseFn)(void* tcpsocket);
+typedef void(*IgWebSocketShutdownWrFn)(void* tcpsocket);
 typedef struct IgWebSocketIo {
     IgWebSocketReadFn readfn;
     IgWebSocketPeekFn peekfn;
     IgWebSocketWriteFn writefn;
     IgWebSocketCloseFn closefn;
+    IgWebSocketShutdownWrFn shutdownfn;
 } IgWebSocketIo;
 typedef struct IgWebSocket {
     /* holds the last error  */
@@ -414,6 +416,15 @@ static int IgWebSocket__write_entire_buffer(IgWebSocket* ws, const void* buffer_
         size -= (size_t)bytes_written;
     }
     return 1;
+}
+
+static void IgWebSocket__close(IgWebSocket* ws) {
+    char buffer[1024];
+    ws->socketio.shutdownfn(ws->tcpsocket);
+    
+    while (ws->socketio.readfn(ws->tcpsocket, buffer, 1024) > 0);
+    
+    ws->socketio.closefn(ws->tcpsocket);
 }
 
 /* ===============================================HANDSHAKE=============================================== */
@@ -1370,7 +1381,7 @@ IG_WEBSOCKET_API int IgWebSocket_server_handshake_reject_error(IgWebSocket* ws, 
     
     IgWebSocket__free_handshake_info(ws, handshake_info);
     
-    ws->socketio.closefn(ws->tcpsocket);
+    IgWebSocket__close(ws);
     ws->state = IG_WS_STATE_CLOSED;
     
     return 1;
@@ -1389,7 +1400,7 @@ IG_WEBSOCKET_API int IgWebSocket_server_handshake_reject_auth(IgWebSocket* ws, I
     
     IgWebSocket__free_handshake_info(ws, handshake_info);
     
-    ws->socketio.closefn(ws->tcpsocket);
+    IgWebSocket__close(ws);
     ws->state = IG_WS_STATE_CLOSED;
     
     return 1;
@@ -1429,7 +1440,7 @@ IG_WEBSOCKET_API int IgWebSocket_server_handshake_reject_other(IgWebSocket* ws, 
    if (!IgWebSocket__write_entire_buffer(ws, reason, reason_len)) return 0;
 
    IgWebSocket__free_handshake_info(ws, handshake_info);
-   ws->socketio.closefn(ws->tcpsocket);
+   IgWebSocket__close(ws);
    ws->state = IG_WS_STATE_CLOSED;
    
    return 1;
@@ -2444,7 +2455,7 @@ IG_WEBSOCKET_API void IgWebSocket_close_with_reason(IgWebSocket* ws, unsigned in
     
     IgWebSocket__send_frame(ws, &header, close_frame);
     
-    ws->socketio.closefn(ws->tcpsocket);
+    IgWebSocket__close(ws);
     ws->state = IG_WS_STATE_CLOSED;
 }
 
