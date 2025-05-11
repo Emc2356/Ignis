@@ -48,6 +48,13 @@ typedef enum IgIProtocol {
     IG_IPV6 = 1
 } IgIProtocol;
 
+typedef enum IgShutdownHow {
+    IG_SHUTDOWN_RD,   /* No more receptions.  */
+    IG_SHUTDOWN_WR,   /* No more transmissions.  */
+    IG_SHUTDOWN_RDWR  /* No more receptions or transmissions.  */
+} IgShutdownHow;
+
+
 /* TCP socket */
 typedef struct IgTcpSocket IgTcpSocket;
 
@@ -60,7 +67,6 @@ IG_NETWORKING_API int IgTcpSocket_can_accept(IgTcpSocket* server);
 IG_NETWORKING_API IgTcpSocket* IgTcpSocket_connect(const char* hostname, int port, IgIProtocol protocol);
 
 /* server and client */
-IG_NETWORKING_API void IgTcpSocket_close(IgTcpSocket* tcpsocket);
 IG_NETWORKING_API int IgTcpSocket_read(IgTcpSocket* tcpsocket, char* buffer, size_t buffer_size);
 IG_NETWORKING_API int IgTcpSocket_peek(IgTcpSocket* tcpsocket, char* buffer, size_t buffer_size);
 IG_NETWORKING_API int IgTcpSocket_write(IgTcpSocket* tcpsocket, const char* buffer, size_t buffer_size);
@@ -68,6 +74,8 @@ IG_NETWORKING_API int IgTcpSocket_read_entire_buffer(IgTcpSocket* tcpsocket, cha
 IG_NETWORKING_API int IgTcpSocket_write_entire_buffer(IgTcpSocket* tcpsocket, const char* buffer, size_t buffer_size);
 IG_NETWORKING_API int IgTcpSocket_can_read(IgTcpSocket* tcpsocket);
 IG_NETWORKING_API int IgTcpSocket_can_write(IgTcpSocket* tcpsocket);
+IG_NETWORKING_API void IgTcpSocket_close(IgTcpSocket* tcpsocket);
+IG_NETWORKING_API void IgTcpSocket_shutdown(IgTcpSocket* tcpsocket, IgShutdownHow how);
 
 /* UDP socket */
 typedef struct IgUdpSocket IgUdpSocket;
@@ -305,14 +313,6 @@ static IgTcpSocket* IgTcpSocket_connect_win32(const char* hostname, int port, Ig
     return sock;
 }
 
-static void IgTcpSocket_close_win32(IgTcpSocket* tcpsocket) {
-    if (tcpsocket->fd != INVALID_SOCKET) {
-        shutdown(tcpsocket->fd, SD_BOTH);
-        closesocket(tcpsocket->fd);
-    }
-    IG_NETWORKING_FREE(tcpsocket);
-}
-
 static int IgTcpSocket_read_win32(IgTcpSocket* tcpsocket, char* buffer, size_t buffer_size) {
     int bytes = recv(tcpsocket->fd, buffer, (int)buffer_size, 0);
     if (bytes == SOCKET_ERROR) return -1;
@@ -346,6 +346,22 @@ static int IgTcpSocket_can_write_win32(IgTcpSocket* tcpsocket) {
     
     return ((events.lNetworkEvents & FD_WRITE) != 0) || ((events.lNetworkEvents & FD_CLOSE) != 0);
 }
+
+static void IgTcpSocket_close_win32(IgTcpSocket* tcpsocket) {
+    closesocket(tcpsocket->fd);
+    IG_NETWORKING_FREE(tcpsocket);
+}
+
+static void IgTcpSocket_shutdown_win32(IgTcpSocket* tcpsocket, IgShutdownHow how) {
+    if (how == IG_SHUTDOWN_RD) {
+       shutdown(tcpsocket->fd, SD_RECEIVE); 
+    } else if (how == IG_SHUTDOWN_WR) {
+        shutdown(tcpsocket->fd, SD_SEND); 
+    } else if (how == IG_SHUTDOWN_RDWR) {
+        shutdown(tcpsocket->fd, SD_BOTH); 
+    }
+}
+
 
 static IgUdpSocket* IgUdpSocket_bind_win32(const char* hostname, int port, IgIProtocol protocol) {
     IgUdpSocket* udpsocket;
@@ -645,18 +661,6 @@ static IgTcpSocket* IgTcpSocket_connect_posix(const char* hostname, int port, Ig
     return tcpsocket;
 }
 
-static void IgTcpSocket_close_posix(IgTcpSocket* tcpsocket) {
-    char buffer[1024];
-    ssize_t bytes_read;
-    /* shutdown further socket io */
-    shutdown(tcpsocket->fd, SHUT_WR);
-    /* drain the socket (read until we get 0 to make sure the other side closed the socket) */
-    while ((bytes_read = read(tcpsocket->fd, buffer, sizeof(buffer))) > 0);
-    /* finally close the socket */
-    close(tcpsocket->fd);
-    IG_NETWORKING_FREE(tcpsocket);
-}
-
 static int IgTcpSocket_read_posix(IgTcpSocket* tcpsocket, char* buffer, size_t buffer_size) {
     ssize_t bytes = read(tcpsocket->fd, buffer, buffer_size);
     if (bytes < 0) return -1;
@@ -708,6 +712,21 @@ static int IgTcpSocket_can_write_posix(IgTcpSocket* tcpsocket) {
         return 1;
     }
     return 0;
+}
+
+static void IgTcpSocket_close_posix(IgTcpSocket* tcpsocket) {
+    close(tcpsocket->fd);
+    IG_NETWORKING_FREE(tcpsocket);
+}
+
+static void IgTcpSocket_shutdown_posix(IgTcpSocket* tcpsocket, IgShutdownHow how) {
+    if (how == IG_SHUTDOWN_RD) {
+       shutdown(tcpsocket->fd, SHUT_RD); 
+    } else if (how == IG_SHUTDOWN_WR) {
+        shutdown(tcpsocket->fd, SHUT_WR); 
+    } else if (how == IG_SHUTDOWN_RDWR) {
+        shutdown(tcpsocket->fd, SHUT_RDWR); 
+    }
 }
 
 static IgUdpSocket* IgUdpSocket_bind_posix(const char* hostname, int port, IgIProtocol protocol) {
@@ -885,11 +904,6 @@ IG_NETWORKING_API IgTcpSocket* IgTcpSocket_connect(const char* hostname, int por
     return IG_NETWORKING_INTERNAL_CALL(IgTcpSocket_connect)(hostname, port, protocol);
 }
 
-IG_NETWORKING_API void IgTcpSocket_close(IgTcpSocket* tcpsocket) {
-    if (tcpsocket == NULL) return;
-    IG_NETWORKING_INTERNAL_CALL(IgTcpSocket_close)(tcpsocket);
-}
-
 IG_NETWORKING_API int IgTcpSocket_read(IgTcpSocket* tcpsocket, char* buffer, size_t buffer_size) {
     if (tcpsocket == NULL) return -1;
     if (buffer_size == 0) return 0;
@@ -943,6 +957,16 @@ IG_NETWORKING_API int IgTcpSocket_can_read(IgTcpSocket* tcpsocket) {
 
 IG_NETWORKING_API int IgTcpSocket_can_write(IgTcpSocket* tcpsocket) {
     return IG_NETWORKING_INTERNAL_CALL(IgTcpSocket_can_write)(tcpsocket);
+}
+
+IG_NETWORKING_API void IgTcpSocket_close(IgTcpSocket* tcpsocket) {
+    if (tcpsocket == NULL) return;
+    IG_NETWORKING_INTERNAL_CALL(IgTcpSocket_close)(tcpsocket);
+}
+
+IG_NETWORKING_API void IgTcpSocket_shutdown(IgTcpSocket* tcpsocket, IgShutdownHow how) {
+    if (tcpsocket == NULL) return;
+    IG_NETWORKING_INTERNAL_CALL(IgTcpSocket_shutdown)(tcpsocket, how);
 }
 
 IG_NETWORKING_API IgUdpSocket* IgUdpSocket_bind(const char* hostname, int port, IgIProtocol protocol) {
