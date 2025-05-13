@@ -59,6 +59,9 @@
 extern "C" {
 #endif /* __cplusplus */
 
+/* define IG_COROUTINE_INTEL to produce intel assembly syntax when compiling for x86_64 with clang or gcc */
+/* define IG_COROUTINE_MULTI_THREADED if you are working on a multi-threaded environment so each thread can have its own coroutines */
+
 /** @defgroup coroutine_api Coroutine API
  *  @brief Primary interface for creating and managing coroutines.
  *  @{
@@ -118,6 +121,11 @@ void IgCoroutine_resume(int id);
  * @param id The ID of the coroutine to kill.
  */
 void IgCoroutine_terminate(int id);
+/**
+ * @brief Terminates the current coroutine.
+ * @note functions the same as IgCoroutine_terminate(IgCoroutine_id()) but it avoids extra searching.
+ */
+void IgCoroutine_terminate_self(void);
 /**
  * @brief Blocks until all coroutines complete execution.
  * @ingroup coroutine_api
@@ -275,10 +283,6 @@ int IgAsyncFence_wait_timeout(IgAsyncFence* fence, long int timeout_ms);
     }
 #endif /* 0 */
 
-/* on linux-x86_64 AT&T is default, to produce intel syntax define IG_COROUTINE_INTEL when compiling this file */
-/* on windows-x86_64 AT&T is default (unless msvc compiler is detected), to produce intel syntax define IG_COROUTINE_INTEL when compiling this file */
-/* define IG_COROUTINE_INTEL to produce intel assembly instead of AT&T when compiling for x86_x64 */
-
 #ifdef IG_COROUTINE_IMPLEMENTATION
 
 #ifdef _WIN32
@@ -400,6 +404,21 @@ extern "C" {
     #define IG_COROUTINE_UNUSED
 #endif
 
+#ifdef IG_COROUTINE_MULTI_THREADED
+#if defined(_MSC_VER)
+    #define IG_COROUTINE_TLS __declspec(thread)
+#elif defined(__MINGW32__)
+    #define IG_COROUTINE_TLS __thread
+#elif defined(__clang__) || defined(__GNUC__) || defined(__TINYC__)
+    #define IG_COROUTINE_TLS __thread
+#else
+    #define IG_COROUTINE_TLS
+#endif
+#else /* IG_COROUTINE_MULTI_THREADED */
+    #define IG_COROUTINE_TLS
+#endif /* IG_COROUTINE_MULTI_THREADED */
+
+
 typedef struct IgCoroutineContext {
     void* stack_base; /* the pointer that was allocated */
     void* rsp;        /* rsp starts at the "end" and moves backwards */
@@ -418,11 +437,17 @@ typedef struct IgCoroutineIndices {
     size_t capacity;
 } IgCoroutineIndices;
 
-static IgCoroutineIndices  IgCoroutine__active   = {0};
-static IgCoroutineIndices  IgCoroutine__dead     = {0};
-static IgCoroutineIndices  IgCoroutine__suspended = {0};
-static IgCoroutineContexts IgCoroutine__contexts = {0};
-static int                 IgCoroutine__current  =  0 ;
+/* when IG_COROUTINE_TLS is defined then access is done by a function call
+ * so we batch all of the variables in one struct, aka one function call */
+typedef struct {
+    IgCoroutineIndices  active;
+    IgCoroutineIndices  dead;
+    IgCoroutineIndices  suspended;
+    IgCoroutineContexts contexts;
+    int                 current;
+} IgCoroutine_thread_context_s;
+
+static IG_COROUTINE_TLS IgCoroutine_thread_context_s IgCoroutine_thread_context = {0};
 
 static void IgCoroutineIndices__append(IgCoroutineIndices* indices, int id) {
     if (indices->size >= indices->capacity) {
@@ -449,7 +474,7 @@ static void IgCoroutineContexts__add_new(IgCoroutineContexts* contexts) {
 }
 
 IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_yield(void) {
-    /* savest the required registers to perform the jump and **jumps** IgCoroutine_switch_context(rsp) */
+    /* savest the required registers to perform the jump and **jumps** IgCoroutine__switch_context(rsp) */
     #if defined(IG_COROUTINE_X86_64_LINUX)
         IG_COROUTINE_ASM_PUSH(rdi);
         IG_COROUTINE_ASM_PUSH(rbp);
@@ -459,7 +484,7 @@ IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_yield(void) {
         IG_COROUTINE_ASM_PUSH(r14);
         IG_COROUTINE_ASM_PUSH(r15);
         IG_COROUTINE_ASM_MOV(rsp, rdi);
-        IG_COROUTINE_ASM_JMP(IgCoroutine_switch_context);
+        IG_COROUTINE_ASM_JMP(IgCoroutine__switch_context);
     #elif defined(IG_COROUTINE_X86_64_WINDOWS)
         IG_COROUTINE_ASM_PUSH(rcx);
         IG_COROUTINE_ASM_PUSH(rbx);
@@ -471,7 +496,7 @@ IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_yield(void) {
         IG_COROUTINE_ASM_PUSH(r14);
         IG_COROUTINE_ASM_PUSH(r15);
         IG_COROUTINE_ASM_MOV(rsp, rcx);
-        IG_COROUTINE_ASM_JMP(IgCoroutine_switch_context);
+        IG_COROUTINE_ASM_JMP(IgCoroutine__switch_context);
     #elif defined(IG_COROUTINE_AARCH64_LINUX)
         asm("	sub sp,  sp,  #240\n"
             "   stp q8, q9, [sp,#0]\n"
@@ -485,13 +510,13 @@ IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_yield(void) {
             "   stp x27, x28, [sp,#192]\n"
             "   stp x29, x30, [sp,#208]\n"
             "	mov x0, sp\n"
-            "   b IgCoroutine_switch_context\n");
+            "   b IgCoroutine__switch_context\n");
     #else
         #error "this platform isnt supported yet"
     #endif
 }
 
-/* the exact same as IgCoroutine_yield but jumps to IgCoroutine_suspend_self_switch_context */
+/* the exact same as IgCoroutine_yield but jumps to IgCoroutine__suspend_self_switch_context */
 IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_suspend_self(void) {
     #if defined(IG_COROUTINE_X86_64_LINUX)
         IG_COROUTINE_ASM_PUSH(rdi);
@@ -502,7 +527,7 @@ IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_suspend_self(void) {
         IG_COROUTINE_ASM_PUSH(r14);
         IG_COROUTINE_ASM_PUSH(r15);
         IG_COROUTINE_ASM_MOV(rsp, rdi);
-        IG_COROUTINE_ASM_JMP(IgCoroutine_suspend_self_switch_context);
+        IG_COROUTINE_ASM_JMP(IgCoroutine__suspend_self_switch_context);
     #elif defined(IG_COROUTINE_X86_64_WINDOWS)
         IG_COROUTINE_ASM_PUSH(rcx);
         IG_COROUTINE_ASM_PUSH(rbx);
@@ -514,7 +539,7 @@ IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_suspend_self(void) {
         IG_COROUTINE_ASM_PUSH(r14);
         IG_COROUTINE_ASM_PUSH(r15);
         IG_COROUTINE_ASM_MOV(rsp, rcx);
-        IG_COROUTINE_ASM_JMP(IgCoroutine_suspend_self_switch_context);
+        IG_COROUTINE_ASM_JMP(IgCoroutine__suspend_self_switch_context);
     #elif defined(IG_COROUTINE_AARCH64_LINUX)
         asm("	sub sp,  sp,  #240\n"
             "   stp q8, q9, [sp,#0]\n"
@@ -528,7 +553,7 @@ IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_suspend_self(void) {
             "   stp x27, x28, [sp,#192]\n"
             "   stp x29, x30, [sp,#208]\n"
             "	mov x0, sp\n"
-            "   b IgCoroutine_suspend_self_switch_context\n");
+            "   b IgCoroutine__suspend_self_switch_context\n");
     #else
         #error "this platform isnt supported yet"
     #endif
@@ -583,31 +608,23 @@ static IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_restore_context
     #endif
 }
 
-static IG_COROUTINE_NOINLINE IG_COROUTINE_KEEP_FUNCTION void IgCoroutine_switch_context(void* rsp) {
-    IgCoroutine__contexts.contexts[IgCoroutine__active.indices[IgCoroutine__current]].rsp = rsp;
+static IG_COROUTINE_NOINLINE IG_COROUTINE_KEEP_FUNCTION void IgCoroutine__switch_context(void* rsp) {
+    IgCoroutine_thread_context.contexts.contexts[IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current]].rsp = rsp;
 
-    IgCoroutine__current = (IgCoroutine__current + 1) % (int)IgCoroutine__active.size;
+    IgCoroutine_thread_context.current = (IgCoroutine_thread_context.current + 1) % (int)IgCoroutine_thread_context.active.size;
 
-    IgCoroutine_restore_context(IgCoroutine__contexts.contexts[IgCoroutine__active.indices[IgCoroutine__current]].rsp);
+    IgCoroutine_restore_context(IgCoroutine_thread_context.contexts.contexts[IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current]].rsp);
 }
 
-static IG_COROUTINE_NOINLINE IG_COROUTINE_KEEP_FUNCTION void IgCoroutine_suspend_self_switch_context(void* rsp) {
-    IgCoroutine__contexts.contexts[IgCoroutine__active.indices[IgCoroutine__current]].rsp = rsp;
+static IG_COROUTINE_NOINLINE IG_COROUTINE_KEEP_FUNCTION void IgCoroutine__suspend_self_switch_context(void* rsp) {
+    IgCoroutine_thread_context.contexts.contexts[IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current]].rsp = rsp;
 
-    IgCoroutineIndices__append(&IgCoroutine__suspended, IgCoroutine__active.indices[IgCoroutine__current]);
-    IgCoroutineIndices__pop(&IgCoroutine__active, (size_t)IgCoroutine__current);
+    IgCoroutineIndices__append(&IgCoroutine_thread_context.suspended, IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current]);
+    IgCoroutineIndices__pop(&IgCoroutine_thread_context.active, (size_t)IgCoroutine_thread_context.current);
     
-    IgCoroutine__current = (IgCoroutine__current + 1) % (int)IgCoroutine__active.size;
+    IgCoroutine_thread_context.current = (IgCoroutine_thread_context.current + 1) % (int)IgCoroutine_thread_context.active.size;
 
-    IgCoroutine_restore_context(IgCoroutine__contexts.contexts[IgCoroutine__active.indices[IgCoroutine__current]].rsp);
-}
-
-static void IgCoroutine__finish_current(void) {
-    IgCoroutineIndices__append(&IgCoroutine__dead, IgCoroutine__active.indices[IgCoroutine__current]);
-    IgCoroutineIndices__pop(&IgCoroutine__active, (size_t)IgCoroutine__current);
-
-    IgCoroutine__current %= IgCoroutine__active.size;
-    IgCoroutine_restore_context(IgCoroutine__contexts.contexts[IgCoroutine__active.indices[IgCoroutine__current]].rsp);
+    IgCoroutine_restore_context(IgCoroutine_thread_context.contexts.contexts[IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current]].rsp);
 }
 
 static void* IgCoroutine__allocate_stack(size_t size) {
@@ -665,25 +682,25 @@ int IgCoroutine_start(IgCoroutineFn func, void* arg) {
     int id;
     void** rsp;
     
-    if (IgCoroutine__contexts.size == 0) {
-        IgCoroutineContexts__add_new(&IgCoroutine__contexts);
-        IgCoroutineIndices__append(&IgCoroutine__active, 0);
+    if (IgCoroutine_thread_context.contexts.size == 0) {
+        IgCoroutineContexts__add_new(&IgCoroutine_thread_context.contexts);
+        IgCoroutineIndices__append(&IgCoroutine_thread_context.active, 0);
     }
     
-    if (IgCoroutine__dead.size > 0) {
-        id = IgCoroutine__dead.indices[--IgCoroutine__dead.size];
+    if (IgCoroutine_thread_context.dead.size > 0) {
+        id = IgCoroutine_thread_context.dead.indices[--IgCoroutine_thread_context.dead.size];
     } else {
-        IgCoroutineContexts__add_new(&IgCoroutine__contexts);
-        id = (int)IgCoroutine__contexts.size-1;
-        IgCoroutine__contexts.contexts[id].stack_base = IgCoroutine__allocate_stack(IG_COROUTINE_STACK_SIZE);
-        assert(IgCoroutine__contexts.contexts[id].stack_base != NULL);
+        IgCoroutineContexts__add_new(&IgCoroutine_thread_context.contexts);
+        id = (int)IgCoroutine_thread_context.contexts.size-1;
+        IgCoroutine_thread_context.contexts.contexts[id].stack_base = IgCoroutine__allocate_stack(IG_COROUTINE_STACK_SIZE);
+        assert(IgCoroutine_thread_context.contexts.contexts[id].stack_base != NULL);
     }
 
-    rsp = (void**)((char*)IgCoroutine__contexts.contexts[id].stack_base + IG_COROUTINE_STACK_SIZE);
+    rsp = (void**)((char*)IgCoroutine_thread_context.contexts.contexts[id].stack_base + IG_COROUTINE_STACK_SIZE);
 
     /* a shim yield */
     #if defined(IG_COROUTINE_X86_64_LINUX)
-        *(--rsp) = (void*)(uintptr_t)IgCoroutine__finish_current;
+        *(--rsp) = (void*)(uintptr_t)IgCoroutine_terminate_self;
         *(--rsp) = (void*)(uintptr_t)func;
         *(--rsp) = arg; /* push rdi */
         *(--rsp) = 0;   /* push rbp */
@@ -693,7 +710,7 @@ int IgCoroutine_start(IgCoroutineFn func, void* arg) {
         *(--rsp) = 0;   /* push r14 */
         *(--rsp) = 0;   /* push r15 */
     #elif defined(IG_COROUTINE_X86_64_WINDOWS)
-        *(--rsp) = (void*)(uintptr_t)IgCoroutine__finish_current;
+        *(--rsp) = (void*)(uintptr_t)IgCoroutine_terminate_self;
         *(--rsp) = (void*)(uintptr_t)func;
         *(--rsp) = arg; /* push rcx */
         *(--rsp) = 0;   /* push rbx */
@@ -706,7 +723,7 @@ int IgCoroutine_start(IgCoroutineFn func, void* arg) {
         *(--rsp) = 0;   /* push r15 */
     #elif defined(IG_COROUTINE_AARCH64_LINUX)
         *(--rsp) = arg;
-        *(--rsp) = (void*)(uintptr_t)IgCoroutine__finish_current;
+        *(--rsp) = (void*)(uintptr_t)IgCoroutine_terminate_self;
         *(--rsp) = (void*)(uintptr_t)func; /* push r0 */
         *(--rsp) = 0;   /* push r29 */
         *(--rsp) = 0;   /* push r28 */
@@ -738,52 +755,52 @@ int IgCoroutine_start(IgCoroutineFn func, void* arg) {
     #else 
         #error "this platform is not supported yet"
     #endif 
-    IgCoroutine__contexts.contexts[id].rsp = rsp;
+    IgCoroutine_thread_context.contexts.contexts[id].rsp = rsp;
 
-    IgCoroutineIndices__append(&IgCoroutine__active, id);
+    IgCoroutineIndices__append(&IgCoroutine_thread_context.active, id);
     
     return id;
 }
 
 int IgCoroutine_id(void) {
-    return IgCoroutine__active.indices[IgCoroutine__current];
+    return IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current];
 }
 
 int IgCoroutine_active_count(void) {
-    return (int)IgCoroutine__active.size;
+    return IgCoroutine_thread_context.active.size > 0 ? (int)IgCoroutine_thread_context.active.size : 1;
 }
 
 int IgCoroutine_suspended_count(void) {
-    return (int)IgCoroutine__suspended.size;
+    return (int)IgCoroutine_thread_context.suspended.size;
 }
 
 void IgCoroutine_suspend(int id) {
     int i;
     
-    if (IgCoroutine__active.indices[IgCoroutine__current] == id) {
+    if (IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current] == id) {
         IgCoroutine_suspend_self();
         return;
     }
     
-    for (i = 0; i < (int)IgCoroutine__active.size; i++) {
-        if (IgCoroutine__active.indices[i] == id) {
-            /* IgCoroutine__current | i [ | end] */
-            if (i > IgCoroutine__current) {
+    for (i = 0; i < (int)IgCoroutine_thread_context.active.size; i++) {
+        if (IgCoroutine_thread_context.active.indices[i] == id) {
+            /* IgCoroutine_thread_context.current | i [ | end] */
+            if (i > IgCoroutine_thread_context.current) {
                 
-            /* i | IgCoroutine__current [ | end] */
-            } else if (i < IgCoroutine__current) {
+            /* i | IgCoroutine_thread_context.current [ | end] */
+            } else if (i < IgCoroutine_thread_context.current) {
                 /* since it is an unordered pop if the current is the last then we make the current i */
-                if (IgCoroutine__current == (int)IgCoroutine__active.size - 1) {
-                    IgCoroutine__current = i;
+                if (IgCoroutine_thread_context.current == (int)IgCoroutine_thread_context.active.size - 1) {
+                    IgCoroutine_thread_context.current = i;
                 } else {
-                    IgCoroutine__current -= 1;
+                    IgCoroutine_thread_context.current -= 1;
                 }
             } else {
                 /* IgCoroutine_suspend_self(); */
             }
             
-            IgCoroutineIndices__pop(&IgCoroutine__active, (size_t)i);
-            IgCoroutineIndices__append(&IgCoroutine__suspended, id);
+            IgCoroutineIndices__pop(&IgCoroutine_thread_context.active, (size_t)i);
+            IgCoroutineIndices__append(&IgCoroutine_thread_context.suspended, id);
             return;
         }
     }
@@ -791,10 +808,10 @@ void IgCoroutine_suspend(int id) {
 
 void IgCoroutine_resume(int id) {
     size_t i;
-    for (i = 0; i < IgCoroutine__suspended.size; i++) {
-        if (IgCoroutine__suspended.indices[i] == id) {
-            IgCoroutineIndices__pop(&IgCoroutine__suspended, i);
-            IgCoroutineIndices__append(&IgCoroutine__active, id);
+    for (i = 0; i < IgCoroutine_thread_context.suspended.size; i++) {
+        if (IgCoroutine_thread_context.suspended.indices[i] == id) {
+            IgCoroutineIndices__pop(&IgCoroutine_thread_context.suspended, i);
+            IgCoroutineIndices__append(&IgCoroutine_thread_context.active, id);
             return;
         }
     }
@@ -803,38 +820,46 @@ void IgCoroutine_resume(int id) {
 void IgCoroutine_terminate(int id) {
     int i;
     if (id == IgCoroutine_id()) {
-        IgCoroutine__finish_current();
+        IgCoroutine_terminate_self();
         return;
     }
-    for (i = 0; i < (int)IgCoroutine__active.size; i++) {
-        if (IgCoroutine__active.indices[i] == id) {
-            /* IgCoroutine__current | i [ | end] */
-            if (i > IgCoroutine__current) {
+    for (i = 0; i < (int)IgCoroutine_thread_context.active.size; i++) {
+        if (IgCoroutine_thread_context.active.indices[i] == id) {
+            /* IgCoroutine_thread_context.current | i [ | end] */
+            if (i > IgCoroutine_thread_context.current) {
                 
-            /* i | IgCoroutine__current [ | end] */
-            } else if (i < IgCoroutine__current) {
+            /* i | IgCoroutine_thread_context.current [ | end] */
+            } else if (i < IgCoroutine_thread_context.current) {
                 /* since it is an unordered pop if the current is the last then we make the current i */
-                if (IgCoroutine__current == (int)IgCoroutine__active.size - 1) {
-                    IgCoroutine__current = i;
+                if (IgCoroutine_thread_context.current == (int)IgCoroutine_thread_context.active.size - 1) {
+                    IgCoroutine_thread_context.current = i;
                 } else {
-                    IgCoroutine__current -= 1;
+                    IgCoroutine_thread_context.current -= 1;
                 }
             } else {
-                /* IgCoroutine__finish_current(); */
+                /* IgCoroutine_terminate_self(); */
             }
             
-            IgCoroutineIndices__pop(&IgCoroutine__active, (size_t)i);
-            IgCoroutineIndices__append(&IgCoroutine__dead, id);
+            IgCoroutineIndices__pop(&IgCoroutine_thread_context.active, (size_t)i);
+            IgCoroutineIndices__append(&IgCoroutine_thread_context.dead, id);
             return;
         }
     }
-    for (i = 0; i < (int)IgCoroutine__suspended.size; i++) {
-        if (IgCoroutine__suspended.indices[i] == id) {
-            IgCoroutineIndices__pop(&IgCoroutine__suspended, (size_t)i);
-            IgCoroutineIndices__append(&IgCoroutine__dead, id);
+    for (i = 0; i < (int)IgCoroutine_thread_context.suspended.size; i++) {
+        if (IgCoroutine_thread_context.suspended.indices[i] == id) {
+            IgCoroutineIndices__pop(&IgCoroutine_thread_context.suspended, (size_t)i);
+            IgCoroutineIndices__append(&IgCoroutine_thread_context.dead, id);
             return;
         }
     }
+}
+
+void IgCoroutine_terminate_self(void) {
+    IgCoroutineIndices__append(&IgCoroutine_thread_context.dead, IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current]);
+    IgCoroutineIndices__pop(&IgCoroutine_thread_context.active, (size_t)IgCoroutine_thread_context.current);
+
+    IgCoroutine_thread_context.current %= IgCoroutine_thread_context.active.size;
+    IgCoroutine_restore_context(IgCoroutine_thread_context.contexts.contexts[IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current]].rsp);
 }
 
 void IgCoroutine_join(void) {
@@ -885,7 +910,7 @@ void IgCoroutine_join(void) {
         size_t capacity;
     } IgCorouineSchedulerTasks;
     
-    static IgCorouineSchedulerTasks IgCoroutineScheduler__tasks = {0};
+    static IG_COROUTINE_TLS IgCorouineSchedulerTasks IgCoroutineScheduler__tasks = {0};
     
     static uint64_t IgCoroutineScheduler__get_ms(void) {
         #ifdef _WIN32
@@ -977,7 +1002,6 @@ void IgCoroutine_join(void) {
     }
     
     void IgCoroutine_guard(IgCoroutineSchedulerGuardFn fn, void* arg) {
-        /* if it can continue right away ignis will not yield the cpu */
         if (fn(arg)) {
             return;
         }
@@ -1029,6 +1053,8 @@ void IgCoroutine_join(void) {
     
     void IgAsyncFence_signal(IgAsyncFence* fence) {
         *fence = 1;
+        /* when the fence is signaled, the coroutine should yield to reach the main coroutine as soon as possible */
+        IgCoroutine_yield();
     }
     
     void IgAsyncFence_wait(IgAsyncFence* fence) {
