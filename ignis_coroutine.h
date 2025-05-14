@@ -63,6 +63,17 @@ extern "C" {
 /* define IG_COROUTINE_MULTI_THREADED if you are working on a multi-threaded environment so each thread can have its own coroutines */
 /* if you are running windows and x86_64 then you _NEED_ to compile ignis_coroutine.x86_64.masm to bypass msvc limitations (it doesnt allow inline x86_64 assembly) */
 
+/* supported os-compiler-architecture triplets
+ * windows-msvc-x86_64 (needs ignis_coroutine.x86_64.masm)
+ * windows-clang-x86_64
+ * windows-gcc-x86_64
+ * linux-clang-x86_64
+ * linux-gcc-x86_64
+ * linux-tcc-x86_64
+ * linux-clang-aarch64
+ * linux-gcc-aarch64
+ */
+
 /** @defgroup coroutine_api Coroutine API
  *  @brief Primary interface for creating and managing coroutines.
  *  @{
@@ -316,11 +327,11 @@ extern "C" {
 #elif defined(__clang__)
     #define IG_COROUTINE_CLANG
 #elif defined(__TINYC__)
-    #define IG_COROUTINE_TINYC
+    #define IG_COROUTINE_TCC
 #elif defined(_MSC_VER)
     #define IG_COROUTINE_MSVC
 #else
-    #error "Unsupported compiler (clang/gnu/msvc required)"
+    #error "Unsupported compiler (clang/gnu/tcc/msvc required)"
 #endif
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -353,8 +364,20 @@ extern "C" {
     #error "Internal error, unreachable"
 #endif
 
+#if defined(IG_COROUTINE_X86_64_WINDOWS) && defined(IG_COROUTINE_MSVC)
+#elif defined(IG_COROUTINE_X86_64_WINDOWS) && defined(IG_COROUTINE_CLANG)
+#elif defined(IG_COROUTINE_X86_64_WINDOWS) && defined(IG_COROUTINE_GCC)
+#elif defined(IG_COROUTINE_X86_64_LINUX) && defined(IG_COROUTINE_GCC)
+#elif defined(IG_COROUTINE_X86_64_LINUX) && defined(IG_COROUTINE_CLANG)
+#elif defined(IG_COROUTINE_X86_64_LINUX) && defined(IG_COROUTINE_TCC)
+#elif defined(IG_COROUTINE_AARCH64_LINUX) && defined(IG_COROUTINE_CLANG)
+#elif defined(IG_COROUTINE_AARCH64_LINUX) && defined(IG_COROUTINE_GCC)
+#else
+    #error "your os-compiler-architecture triplet is not supported yet, if this is wrong open an issue at https://github.com/emc2356/ignis"
+#endif
+
 #if defined(IG_COROUTINE_ARCH_X86_64)
-    #if defined(IG_COROUTINE_GCC) || defined(IG_COROUTINE_CLANG) || defined(IG_COROUTINE_TINYC)
+    #if defined(IG_COROUTINE_GCC) || defined(IG_COROUTINE_CLANG) || defined(IG_COROUTINE_TCC)
         #ifdef IG_COROUTINE_INTEL
             #define IG_COROUTINE_ASM_PUSH(reg)     asm volatile("    push " #reg "\n")
             #define IG_COROUTINE_ASM_POP(reg)      asm volatile("    pop " #reg "\n")
@@ -372,12 +395,13 @@ extern "C" {
         #if defined(IG_COROUTINE_MSVC)
             /* pass */
         #else /* IG_COROUTINE_MSVC */
-            #error "only clang, gcc and msvc are supported"
+            #error "only clang, gcc, tcc and msvc are supported"
         #endif /* IG_COROUTINE_MSVC */
     #endif /* defined(IG_COROUTINE_GCC) || defined(IG_COROUTINE_CLANG) */
 #endif /* defined(IG_COROUTINE_ARCH_X86_64) */
 
-#if defined(IG_COROUTINE_GCC) || defined(IG_COROUTINE_CLANG) || defined(IG_COROUTINE_TINYC)
+#if defined(IG_COROUTINE_GCC) || defined(IG_COROUTINE_CLANG) || defined(IG_COROUTINE_TCC)
+    /* tcc does not error on this attributes but doesnt understand most/all of them */
     #define IG_COROUTINE_NAKED         __attribute__((naked))
     #define IG_COROUTINE_NOINLINE      __attribute__((noinline))
     #define IG_COROUTINE_KEEP_FUNCTION __attribute__((used))
@@ -387,14 +411,10 @@ extern "C" {
     #define IG_COROUTINE_NAKED         __declspec(naked)
     #define IG_COROUTINE_NOINLINE      __declspec(noinline)
     #define IG_COROUTINE_KEEP_FUNCTION extern
-    #define IG_COROUTINE_UNUSED        __declspec(unused)
+    /* #define IG_COROUTINE_UNUSED        __declspec(unused) */
     #define IG_COROUTINE_TLS           __declspec(thread)
 #else
-#define IG_COROUTINE_NAKED
-    #define IG_COROUTINE_NOINLINE
-    #define IG_COROUTINE_KEEP_FUNCTION
-    #define IG_COROUTINE_UNUSED
-    #define IG_COROUTINE_TLS
+    #error "unreachable (unknown compiler)"
 #endif
 
 #ifndef IG_COROUTINE_MULTI_THREADED
@@ -462,9 +482,26 @@ static void IgCoroutineContexts__add_new(IgCoroutineContexts* contexts) {
     extern void IgCoroutine_suspend_self(void);
     extern void IgCoroutine_restore_context(void *rsp);
 #else /* IG_COROUTINE_MSVC */
+    /* tcc does not understand naked attributes so it generates a prolog
+    * 0: push   %rbp
+    * 1: mov    %rsp,%rbp
+    * 2: sub    $0x0,%rsp
+    * thus the functions bellow need to pop rbp before they manipulate the registers
+    */
+    #if defined(IG_COROUTINE_TCC)
+        #ifdef IG_COROUTINE_ARCH_X86_64
+            #define IG_COROUTINE_ASM_PROLOG IG_COROUTINE_ASM_POP(rbp)
+        #else /* IG_COROUTINE_ARCH_X86_64 */
+            #define IG_COROUTINE_ASM_PROLOG
+        #endif /* IG_COROUTINE_ARCH_X86_64 */
+    #else /* IG_COROUTINE_TCC */
+        #define IG_COROUTINE_ASM_PROLOG
+    #endif /* IG_COROUTINE_TCC */
+
     IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_yield(void) {
         /* savest the required registers to perform the jump and **jumps** IgCoroutine__switch_context(rsp) */
         #if defined(IG_COROUTINE_X86_64_LINUX)
+            IG_COROUTINE_ASM_PROLOG;
             IG_COROUTINE_ASM_PUSH(rdi);
             IG_COROUTINE_ASM_PUSH(rbp);
             IG_COROUTINE_ASM_PUSH(rbx);
@@ -475,6 +512,7 @@ static void IgCoroutineContexts__add_new(IgCoroutineContexts* contexts) {
             IG_COROUTINE_ASM_MOV(rsp, rdi);
             IG_COROUTINE_ASM_JMP(IgCoroutine__switch_context);
         #elif defined(IG_COROUTINE_X86_64_WINDOWS)
+            IG_COROUTINE_ASM_PROLOG;
             IG_COROUTINE_ASM_PUSH(rcx);
             IG_COROUTINE_ASM_PUSH(rbx);
             IG_COROUTINE_ASM_PUSH(rbp);
@@ -487,6 +525,7 @@ static void IgCoroutineContexts__add_new(IgCoroutineContexts* contexts) {
             IG_COROUTINE_ASM_MOV(rsp, rcx);
             IG_COROUTINE_ASM_JMP(IgCoroutine__switch_context);
         #elif defined(IG_COROUTINE_AARCH64_LINUX)
+            IG_COROUTINE_ASM_PROLOG;
             asm("	sub sp,  sp,  #240\n"
                 "   stp q8, q9, [sp,#0]\n"
                 "   stp q10, q11, [sp,#32]\n"
@@ -508,6 +547,7 @@ static void IgCoroutineContexts__add_new(IgCoroutineContexts* contexts) {
     /* the exact same as IgCoroutine_yield but jumps to IgCoroutine__suspend_self_switch_context */
     IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_suspend_self(void) {
         #if defined(IG_COROUTINE_X86_64_LINUX)
+            IG_COROUTINE_ASM_PROLOG;
             IG_COROUTINE_ASM_PUSH(rdi);
             IG_COROUTINE_ASM_PUSH(rbp);
             IG_COROUTINE_ASM_PUSH(rbx);
@@ -518,6 +558,7 @@ static void IgCoroutineContexts__add_new(IgCoroutineContexts* contexts) {
             IG_COROUTINE_ASM_MOV(rsp, rdi);
             IG_COROUTINE_ASM_JMP(IgCoroutine__suspend_self_switch_context);
         #elif defined(IG_COROUTINE_X86_64_WINDOWS)
+            IG_COROUTINE_ASM_PROLOG;
             IG_COROUTINE_ASM_PUSH(rcx);
             IG_COROUTINE_ASM_PUSH(rbx);
             IG_COROUTINE_ASM_PUSH(rbp);
@@ -530,6 +571,7 @@ static void IgCoroutineContexts__add_new(IgCoroutineContexts* contexts) {
             IG_COROUTINE_ASM_MOV(rsp, rcx);
             IG_COROUTINE_ASM_JMP(IgCoroutine__suspend_self_switch_context);
         #elif defined(IG_COROUTINE_AARCH64_LINUX)
+            IG_COROUTINE_ASM_PROLOG;
             asm("	sub sp,  sp,  #240\n"
                 "   stp q8, q9, [sp,#0]\n"
                 "   stp q10, q11, [sp,#32]\n"
@@ -554,6 +596,7 @@ static void IgCoroutineContexts__add_new(IgCoroutineContexts* contexts) {
          
         /* the rest of the registers are "volatile" and they are expected to be changed */
         #if defined(IG_COROUTINE_X86_64_LINUX)
+            IG_COROUTINE_ASM_PROLOG;
             IG_COROUTINE_ASM_MOV(rdi, rsp);
             IG_COROUTINE_ASM_POP(r15);
             IG_COROUTINE_ASM_POP(r14);
@@ -564,6 +607,7 @@ static void IgCoroutineContexts__add_new(IgCoroutineContexts* contexts) {
             IG_COROUTINE_ASM_POP(rdi);
             IG_COROUTINE_ASM_RET();
         #elif defined(IG_COROUTINE_X86_64_WINDOWS)
+            IG_COROUTINE_ASM_PROLOG;
             IG_COROUTINE_ASM_MOV(rcx, rsp);
             IG_COROUTINE_ASM_POP(r15);
             IG_COROUTINE_ASM_POP(r14);
@@ -576,6 +620,7 @@ static void IgCoroutineContexts__add_new(IgCoroutineContexts* contexts) {
             IG_COROUTINE_ASM_POP(rcx);
             IG_COROUTINE_ASM_RET();
         #elif defined(IG_COROUTINE_AARCH64_LINUX)
+            IG_COROUTINE_ASM_PROLOG;
             asm("   mov sp, x0\n"
                 "   ldp q8, q9, [sp,#0]\n"
                 "   ldp q10, q11, [sp,#32]\n"
@@ -845,6 +890,9 @@ void IgCoroutine_terminate(int id) {
 }
 
 void IgCoroutine_terminate_self(void) {
+    /* the "main" coroutine can never finish */
+    if (IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current] == 0) return;
+    
     IgCoroutineIndices__append(&IgCoroutine_thread_context.dead, IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current]);
     IgCoroutineIndices__pop(&IgCoroutine_thread_context.active, (size_t)IgCoroutine_thread_context.current);
 
