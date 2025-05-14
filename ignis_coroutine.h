@@ -46,8 +46,8 @@
 #define IG_COROUTINE_STACK_SIZE (64*1024)
 #endif /* IG_COROUTINE_STACK_SIZE */
 
-/* currently supported platforms: x86_64-linux x86_64-windows */
-/* currently supported compilers: clang gcc */
+/* currently supported platforms: x86_64-linux x86_64-windows aarch64-linux */
+/* currently supported compilers: clang gcc msvc */
 
 /* errors with -Weverything */
 #ifdef __clang__
@@ -61,6 +61,7 @@ extern "C" {
 
 /* define IG_COROUTINE_INTEL to produce intel assembly syntax when compiling for x86_64 with clang or gcc */
 /* define IG_COROUTINE_MULTI_THREADED if you are working on a multi-threaded environment so each thread can have its own coroutines */
+/* if you are running windows and x86_64 then you _NEED_ to compile ignis_coroutine.x86_64.masm to bypass msvc limitations (it doesnt allow inline x86_64 assembly) */
 
 /** @defgroup coroutine_api Coroutine API
  *  @brief Primary interface for creating and managing coroutines.
@@ -314,8 +315,12 @@ extern "C" {
     #define IG_COROUTINE_GCC
 #elif defined(__clang__)
     #define IG_COROUTINE_CLANG
+#elif defined(__TINYC__)
+    #define IG_COROUTINE_TINYC
+#elif defined(_MSC_VER)
+    #define IG_COROUTINE_MSVC
 #else
-    #error "Unsupported compiler (clang/gnu required)"
+    #error "Unsupported compiler (clang/gnu/msvc required)"
 #endif
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -349,7 +354,7 @@ extern "C" {
 #endif
 
 #if defined(IG_COROUTINE_ARCH_X86_64)
-    #if defined(IG_COROUTINE_GCC) || defined(IG_COROUTINE_CLANG)
+    #if defined(IG_COROUTINE_GCC) || defined(IG_COROUTINE_CLANG) || defined(IG_COROUTINE_TINYC)
         #ifdef IG_COROUTINE_INTEL
             #define IG_COROUTINE_ASM_PUSH(reg)     asm volatile("    push " #reg "\n")
             #define IG_COROUTINE_ASM_POP(reg)      asm volatile("    pop " #reg "\n")
@@ -364,60 +369,38 @@ extern "C" {
             #define IG_COROUTINE_ASM_JMP(to)       asm volatile("    jmp " #to "\n")
         #endif /* IG_COROUTINE_INTEL */
     #else /* defined(IG_COROUTINE_GCC) || defined(IG_COROUTINE_CLANG) */
-        #if defined(_MSC_VER)
-            #error "msvc is not supported because it doesnt allow inline x86_64 assembly"
-        #else /* _MSC_VER */
+        #if defined(IG_COROUTINE_MSVC)
+            /* pass */
+        #else /* IG_COROUTINE_MSVC */
             #error "only clang, gcc and msvc are supported"
-        #endif /* _MSC_VER */
+        #endif /* IG_COROUTINE_MSVC */
     #endif /* defined(IG_COROUTINE_GCC) || defined(IG_COROUTINE_CLANG) */
 #endif /* defined(IG_COROUTINE_ARCH_X86_64) */
 
-#if defined(IG_COROUTINE_GCC) || defined(IG_COROUTINE_CLANG)
-    #define IG_COROUTINE_NAKED __attribute__((naked))
-#elif defined(_MSC_VER)
-    #define IG_COROUTINE_NAKED __declspec(naked)
-#else
-    #define IG_COROUTINE_NAKED
-#endif
-
-#if defined(IG_COROUTINE_GCC) || defined(IG_COROUTINE_CLANG)
-    #define IG_COROUTINE_NOINLINE __attribute__((noinline))
-#elif defined(_MSC_VER)
-    #define IG_COROUTINE_NOINLINE __declspec(noinline)
-#else
-    #define IG_COROUTINE_NOINLINE
-#endif
-
-#if defined(IG_COROUTINE_GCC) || defined(IG_COROUTINE_CLANG)
+#if defined(IG_COROUTINE_GCC) || defined(IG_COROUTINE_CLANG) || defined(IG_COROUTINE_TINYC)
+    #define IG_COROUTINE_NAKED         __attribute__((naked))
+    #define IG_COROUTINE_NOINLINE      __attribute__((noinline))
     #define IG_COROUTINE_KEEP_FUNCTION __attribute__((used))
-#elif defined(_MSC_VER)
-    #define IG_COROUTINE_KEEP_FUNCTION __declspec(selectany)
+    #define IG_COROUTINE_UNUSED        __attribute__((unused))
+    #define IG_COROUTINE_TLS          __thread
+#elif defined(IG_COROUTINE_MSVC)
+    #define IG_COROUTINE_NAKED         __declspec(naked)
+    #define IG_COROUTINE_NOINLINE      __declspec(noinline)
+    #define IG_COROUTINE_KEEP_FUNCTION extern
+    #define IG_COROUTINE_UNUSED        __declspec(unused)
+    #define IG_COROUTINE_TLS           __declspec(thread)
 #else
+#define IG_COROUTINE_NAKED
+    #define IG_COROUTINE_NOINLINE
     #define IG_COROUTINE_KEEP_FUNCTION
-#endif
-
-#if defined(IG_COROUTINE_GCC) || defined(IG_COROUTINE_CLANG)
-    #define IG_COROUTINE_UNUSED __attribute__((unused))
-#elif defined(_MSC_VER)
-    #define IG_COROUTINE_UNUSED __declspec(unused)
-#else
     #define IG_COROUTINE_UNUSED
-#endif
-
-#ifdef IG_COROUTINE_MULTI_THREADED
-#if defined(_MSC_VER)
-    #define IG_COROUTINE_TLS __declspec(thread)
-#elif defined(__MINGW32__)
-    #define IG_COROUTINE_TLS __thread
-#elif defined(__clang__) || defined(__GNUC__) || defined(__TINYC__)
-    #define IG_COROUTINE_TLS __thread
-#else
     #define IG_COROUTINE_TLS
 #endif
-#else /* IG_COROUTINE_MULTI_THREADED */
+
+#ifndef IG_COROUTINE_MULTI_THREADED
+    #undef IG_COROUTINE_TLS
     #define IG_COROUTINE_TLS
 #endif /* IG_COROUTINE_MULTI_THREADED */
-
 
 typedef struct IgCoroutineContext {
     void* stack_base; /* the pointer that was allocated */
@@ -473,142 +456,149 @@ static void IgCoroutineContexts__add_new(IgCoroutineContexts* contexts) {
     contexts->size++;
 }
 
-IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_yield(void) {
-    /* savest the required registers to perform the jump and **jumps** IgCoroutine__switch_context(rsp) */
-    #if defined(IG_COROUTINE_X86_64_LINUX)
-        IG_COROUTINE_ASM_PUSH(rdi);
-        IG_COROUTINE_ASM_PUSH(rbp);
-        IG_COROUTINE_ASM_PUSH(rbx);
-        IG_COROUTINE_ASM_PUSH(r12);
-        IG_COROUTINE_ASM_PUSH(r13);
-        IG_COROUTINE_ASM_PUSH(r14);
-        IG_COROUTINE_ASM_PUSH(r15);
-        IG_COROUTINE_ASM_MOV(rsp, rdi);
-        IG_COROUTINE_ASM_JMP(IgCoroutine__switch_context);
-    #elif defined(IG_COROUTINE_X86_64_WINDOWS)
-        IG_COROUTINE_ASM_PUSH(rcx);
-        IG_COROUTINE_ASM_PUSH(rbx);
-        IG_COROUTINE_ASM_PUSH(rbp);
-        IG_COROUTINE_ASM_PUSH(rdi);
-        IG_COROUTINE_ASM_PUSH(rsi);
-        IG_COROUTINE_ASM_PUSH(r12);
-        IG_COROUTINE_ASM_PUSH(r13);
-        IG_COROUTINE_ASM_PUSH(r14);
-        IG_COROUTINE_ASM_PUSH(r15);
-        IG_COROUTINE_ASM_MOV(rsp, rcx);
-        IG_COROUTINE_ASM_JMP(IgCoroutine__switch_context);
-    #elif defined(IG_COROUTINE_AARCH64_LINUX)
-        asm("	sub sp,  sp,  #240\n"
-            "   stp q8, q9, [sp,#0]\n"
-            "   stp q10, q11, [sp,#32]\n"
-            "   stp q12, q13, [sp,#64]\n"
-            "   stp q14, q15, [sp,#96]\n"
-            "   stp x19, x20, [sp,#128]\n"
-            "   stp x21, x22, [sp,#144]\n"
-            "   stp x23, x24, [sp,#160]\n"
-            "   stp x25, x26, [sp,#176]\n"
-            "   stp x27, x28, [sp,#192]\n"
-            "   stp x29, x30, [sp,#208]\n"
-            "	mov x0, sp\n"
-            "   b IgCoroutine__switch_context\n");
-    #else
-        #error "this platform isnt supported yet"
-    #endif
-}
+#ifdef IG_COROUTINE_MSVC
+    /* msvc is **special** amongst the other compilers */
+    extern void IgCoroutine_yield(void);
+    extern void IgCoroutine_suspend_self(void);
+    extern void IgCoroutine_restore_context(void *rsp);
+#else /* IG_COROUTINE_MSVC */
+    IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_yield(void) {
+        /* savest the required registers to perform the jump and **jumps** IgCoroutine__switch_context(rsp) */
+        #if defined(IG_COROUTINE_X86_64_LINUX)
+            IG_COROUTINE_ASM_PUSH(rdi);
+            IG_COROUTINE_ASM_PUSH(rbp);
+            IG_COROUTINE_ASM_PUSH(rbx);
+            IG_COROUTINE_ASM_PUSH(r12);
+            IG_COROUTINE_ASM_PUSH(r13);
+            IG_COROUTINE_ASM_PUSH(r14);
+            IG_COROUTINE_ASM_PUSH(r15);
+            IG_COROUTINE_ASM_MOV(rsp, rdi);
+            IG_COROUTINE_ASM_JMP(IgCoroutine__switch_context);
+        #elif defined(IG_COROUTINE_X86_64_WINDOWS)
+            IG_COROUTINE_ASM_PUSH(rcx);
+            IG_COROUTINE_ASM_PUSH(rbx);
+            IG_COROUTINE_ASM_PUSH(rbp);
+            IG_COROUTINE_ASM_PUSH(rdi);
+            IG_COROUTINE_ASM_PUSH(rsi);
+            IG_COROUTINE_ASM_PUSH(r12);
+            IG_COROUTINE_ASM_PUSH(r13);
+            IG_COROUTINE_ASM_PUSH(r14);
+            IG_COROUTINE_ASM_PUSH(r15);
+            IG_COROUTINE_ASM_MOV(rsp, rcx);
+            IG_COROUTINE_ASM_JMP(IgCoroutine__switch_context);
+        #elif defined(IG_COROUTINE_AARCH64_LINUX)
+            asm("	sub sp,  sp,  #240\n"
+                "   stp q8, q9, [sp,#0]\n"
+                "   stp q10, q11, [sp,#32]\n"
+                "   stp q12, q13, [sp,#64]\n"
+                "   stp q14, q15, [sp,#96]\n"
+                "   stp x19, x20, [sp,#128]\n"
+                "   stp x21, x22, [sp,#144]\n"
+                "   stp x23, x24, [sp,#160]\n"
+                "   stp x25, x26, [sp,#176]\n"
+                "   stp x27, x28, [sp,#192]\n"
+                "   stp x29, x30, [sp,#208]\n"
+                "	mov x0, sp\n"
+                "   b IgCoroutine__switch_context\n");
+        #else
+            #error "this platform isnt supported yet"
+        #endif
+    }
+    
+    /* the exact same as IgCoroutine_yield but jumps to IgCoroutine__suspend_self_switch_context */
+    IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_suspend_self(void) {
+        #if defined(IG_COROUTINE_X86_64_LINUX)
+            IG_COROUTINE_ASM_PUSH(rdi);
+            IG_COROUTINE_ASM_PUSH(rbp);
+            IG_COROUTINE_ASM_PUSH(rbx);
+            IG_COROUTINE_ASM_PUSH(r12);
+            IG_COROUTINE_ASM_PUSH(r13);
+            IG_COROUTINE_ASM_PUSH(r14);
+            IG_COROUTINE_ASM_PUSH(r15);
+            IG_COROUTINE_ASM_MOV(rsp, rdi);
+            IG_COROUTINE_ASM_JMP(IgCoroutine__suspend_self_switch_context);
+        #elif defined(IG_COROUTINE_X86_64_WINDOWS)
+            IG_COROUTINE_ASM_PUSH(rcx);
+            IG_COROUTINE_ASM_PUSH(rbx);
+            IG_COROUTINE_ASM_PUSH(rbp);
+            IG_COROUTINE_ASM_PUSH(rdi);
+            IG_COROUTINE_ASM_PUSH(rsi);
+            IG_COROUTINE_ASM_PUSH(r12);
+            IG_COROUTINE_ASM_PUSH(r13);
+            IG_COROUTINE_ASM_PUSH(r14);
+            IG_COROUTINE_ASM_PUSH(r15);
+            IG_COROUTINE_ASM_MOV(rsp, rcx);
+            IG_COROUTINE_ASM_JMP(IgCoroutine__suspend_self_switch_context);
+        #elif defined(IG_COROUTINE_AARCH64_LINUX)
+            asm("	sub sp,  sp,  #240\n"
+                "   stp q8, q9, [sp,#0]\n"
+                "   stp q10, q11, [sp,#32]\n"
+                "   stp q12, q13, [sp,#64]\n"
+                "   stp q14, q15, [sp,#96]\n"
+                "   stp x19, x20, [sp,#128]\n"
+                "   stp x21, x22, [sp,#144]\n"
+                "   stp x23, x24, [sp,#160]\n"
+                "   stp x25, x26, [sp,#176]\n"
+                "   stp x27, x28, [sp,#192]\n"
+                "   stp x29, x30, [sp,#208]\n"
+                "	mov x0, sp\n"
+                "   b IgCoroutine__suspend_self_switch_context\n");
+        #else
+            #error "this platform isnt supported yet"
+        #endif
+    }
+    
+    static IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_restore_context(void *rsp IG_COROUTINE_UNUSED) {
+        /* to call restore_context means that yield was called and the return address is saved
+         * so it only needs to reverse the yield operation and return */
+         
+        /* the rest of the registers are "volatile" and they are expected to be changed */
+        #if defined(IG_COROUTINE_X86_64_LINUX)
+            IG_COROUTINE_ASM_MOV(rdi, rsp);
+            IG_COROUTINE_ASM_POP(r15);
+            IG_COROUTINE_ASM_POP(r14);
+            IG_COROUTINE_ASM_POP(r13);
+            IG_COROUTINE_ASM_POP(r12);
+            IG_COROUTINE_ASM_POP(rbx);
+            IG_COROUTINE_ASM_POP(rbp);
+            IG_COROUTINE_ASM_POP(rdi);
+            IG_COROUTINE_ASM_RET();
+        #elif defined(IG_COROUTINE_X86_64_WINDOWS)
+            IG_COROUTINE_ASM_MOV(rcx, rsp);
+            IG_COROUTINE_ASM_POP(r15);
+            IG_COROUTINE_ASM_POP(r14);
+            IG_COROUTINE_ASM_POP(r13);
+            IG_COROUTINE_ASM_POP(r12);
+            IG_COROUTINE_ASM_POP(rsi);
+            IG_COROUTINE_ASM_POP(rdi);
+            IG_COROUTINE_ASM_POP(rbp);
+            IG_COROUTINE_ASM_POP(rbx);
+            IG_COROUTINE_ASM_POP(rcx);
+            IG_COROUTINE_ASM_RET();
+        #elif defined(IG_COROUTINE_AARCH64_LINUX)
+            asm("   mov sp, x0\n"
+                "   ldp q8, q9, [sp,#0]\n"
+                "   ldp q10, q11, [sp,#32]\n"
+                "   ldp q12, q13, [sp,#64]\n"
+                "   ldp q14, q15, [sp,#96]\n"
+                "   ldp x19, x20, [sp,#128]\n"
+                "   ldp x21, x22, [sp,#144]\n"
+                "   ldp x23, x24, [sp,#160]\n"
+                "   ldp x25, x26, [sp,#176]\n"
+                "   ldp x27, x28, [sp,#192]\n"
+                "   ldp x29, x30, [sp,#208]\n"
+                "   mov x1, x30\n"
+                "   ldr x30, [sp, #224]\n"
+                "   ldr x0, [sp, #232]\n"
+                "   add sp, sp, #240\n"
+                "   ret x1\n");
+        #else
+            #error "this platform isnt supported yet"
+        #endif
+    }
+#endif /* IG_COROUTINE_MSVC */
 
-/* the exact same as IgCoroutine_yield but jumps to IgCoroutine__suspend_self_switch_context */
-IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_suspend_self(void) {
-    #if defined(IG_COROUTINE_X86_64_LINUX)
-        IG_COROUTINE_ASM_PUSH(rdi);
-        IG_COROUTINE_ASM_PUSH(rbp);
-        IG_COROUTINE_ASM_PUSH(rbx);
-        IG_COROUTINE_ASM_PUSH(r12);
-        IG_COROUTINE_ASM_PUSH(r13);
-        IG_COROUTINE_ASM_PUSH(r14);
-        IG_COROUTINE_ASM_PUSH(r15);
-        IG_COROUTINE_ASM_MOV(rsp, rdi);
-        IG_COROUTINE_ASM_JMP(IgCoroutine__suspend_self_switch_context);
-    #elif defined(IG_COROUTINE_X86_64_WINDOWS)
-        IG_COROUTINE_ASM_PUSH(rcx);
-        IG_COROUTINE_ASM_PUSH(rbx);
-        IG_COROUTINE_ASM_PUSH(rbp);
-        IG_COROUTINE_ASM_PUSH(rdi);
-        IG_COROUTINE_ASM_PUSH(rsi);
-        IG_COROUTINE_ASM_PUSH(r12);
-        IG_COROUTINE_ASM_PUSH(r13);
-        IG_COROUTINE_ASM_PUSH(r14);
-        IG_COROUTINE_ASM_PUSH(r15);
-        IG_COROUTINE_ASM_MOV(rsp, rcx);
-        IG_COROUTINE_ASM_JMP(IgCoroutine__suspend_self_switch_context);
-    #elif defined(IG_COROUTINE_AARCH64_LINUX)
-        asm("	sub sp,  sp,  #240\n"
-            "   stp q8, q9, [sp,#0]\n"
-            "   stp q10, q11, [sp,#32]\n"
-            "   stp q12, q13, [sp,#64]\n"
-            "   stp q14, q15, [sp,#96]\n"
-            "   stp x19, x20, [sp,#128]\n"
-            "   stp x21, x22, [sp,#144]\n"
-            "   stp x23, x24, [sp,#160]\n"
-            "   stp x25, x26, [sp,#176]\n"
-            "   stp x27, x28, [sp,#192]\n"
-            "   stp x29, x30, [sp,#208]\n"
-            "	mov x0, sp\n"
-            "   b IgCoroutine__suspend_self_switch_context\n");
-    #else
-        #error "this platform isnt supported yet"
-    #endif
-}
-
-static IG_COROUTINE_NAKED IG_COROUTINE_NOINLINE void IgCoroutine_restore_context(void *rsp IG_COROUTINE_UNUSED) {
-    /* to call restore_context means that yield was called and the return address is saved
-     * so it only needs to reverse the yield operation and return */
-     
-    /* the rest of the registers are "volatile" and they are expected to be changed */
-    #if defined(IG_COROUTINE_X86_64_LINUX)
-        IG_COROUTINE_ASM_MOV(rdi, rsp);
-        IG_COROUTINE_ASM_POP(r15);
-        IG_COROUTINE_ASM_POP(r14);
-        IG_COROUTINE_ASM_POP(r13);
-        IG_COROUTINE_ASM_POP(r12);
-        IG_COROUTINE_ASM_POP(rbx);
-        IG_COROUTINE_ASM_POP(rbp);
-        IG_COROUTINE_ASM_POP(rdi);
-        IG_COROUTINE_ASM_RET();
-    #elif defined(IG_COROUTINE_X86_64_WINDOWS)
-        IG_COROUTINE_ASM_MOV(rcx, rsp);
-        IG_COROUTINE_ASM_POP(r15);
-        IG_COROUTINE_ASM_POP(r14);
-        IG_COROUTINE_ASM_POP(r13);
-        IG_COROUTINE_ASM_POP(r12);
-        IG_COROUTINE_ASM_POP(rsi);
-        IG_COROUTINE_ASM_POP(rdi);
-        IG_COROUTINE_ASM_POP(rbp);
-        IG_COROUTINE_ASM_POP(rbx);
-        IG_COROUTINE_ASM_POP(rcx);
-        IG_COROUTINE_ASM_RET();
-    #elif defined(IG_COROUTINE_AARCH64_LINUX)
-        asm("   mov sp, x0\n"
-            "   ldp q8, q9, [sp,#0]\n"
-            "   ldp q10, q11, [sp,#32]\n"
-            "   ldp q12, q13, [sp,#64]\n"
-            "   ldp q14, q15, [sp,#96]\n"
-            "   ldp x19, x20, [sp,#128]\n"
-            "   ldp x21, x22, [sp,#144]\n"
-            "   ldp x23, x24, [sp,#160]\n"
-            "   ldp x25, x26, [sp,#176]\n"
-            "   ldp x27, x28, [sp,#192]\n"
-            "   ldp x29, x30, [sp,#208]\n"
-            "   mov x1, x30\n"
-            "   ldr x30, [sp, #224]\n"
-            "   ldr x0, [sp, #232]\n"
-            "   add sp, sp, #240\n"
-            "   ret x1\n");
-    #else
-        #error "this platform isnt supported yet"
-    #endif
-}
-
-static IG_COROUTINE_NOINLINE IG_COROUTINE_KEEP_FUNCTION void IgCoroutine__switch_context(void* rsp) {
+IG_COROUTINE_NOINLINE IG_COROUTINE_KEEP_FUNCTION void IgCoroutine__switch_context(void* rsp) {
     IgCoroutine_thread_context.contexts.contexts[IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current]].rsp = rsp;
 
     IgCoroutine_thread_context.current = (IgCoroutine_thread_context.current + 1) % (int)IgCoroutine_thread_context.active.size;
@@ -616,7 +606,7 @@ static IG_COROUTINE_NOINLINE IG_COROUTINE_KEEP_FUNCTION void IgCoroutine__switch
     IgCoroutine_restore_context(IgCoroutine_thread_context.contexts.contexts[IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current]].rsp);
 }
 
-static IG_COROUTINE_NOINLINE IG_COROUTINE_KEEP_FUNCTION void IgCoroutine__suspend_self_switch_context(void* rsp) {
+IG_COROUTINE_NOINLINE IG_COROUTINE_KEEP_FUNCTION void IgCoroutine__suspend_self_switch_context(void* rsp) {
     IgCoroutine_thread_context.contexts.contexts[IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current]].rsp = rsp;
 
     IgCoroutineIndices__append(&IgCoroutine_thread_context.suspended, IgCoroutine_thread_context.active.indices[IgCoroutine_thread_context.current]);

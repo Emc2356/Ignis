@@ -1,0 +1,50 @@
+; this file is necessary as msvc x86_64 compiler doesnt permit inline assembly like
+; other compilers such as gcc and clang
+.code
+
+extrn IgCoroutine__switch_context : proc
+extrn IgCoroutine__suspend_self_switch_context : proc
+
+IgCoroutine_yield PROC
+    push rcx
+    push rbx
+    push rbp
+    push rdi
+    push rsi
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rcx, rsp
+    jmp IgCoroutine__switch_context
+IgCoroutine_yield ENDP
+
+IgCoroutine_suspend_self PROC
+    push rcx
+    push rbx
+    push rbp
+    push rdi
+    push rsi
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rcx, rsp
+    jmp IgCoroutine__suspend_self_switch_context
+IgCoroutine_suspend_self ENDP
+
+IgCoroutine_restore_context PROC
+    mov rsp, rcx
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rsi
+    pop rdi
+    pop rbp
+    pop rbx
+    pop rcx
+    ret
+IgCoroutine_restore_context ENDP
+
+END
